@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QaStorageRepository } from './qaStorage';
-import { runToQaForParent, TrackerChoiceRequiredError } from './toQa';
+import { runToQaForParent, TrackerChoiceRequiredError, type ToQaOptions } from './toQa';
 
 describe('/to-qa tracker selection', () => {
   const temporaryDirectories: string[] = [];
@@ -14,104 +14,57 @@ describe('/to-qa tracker selection', () => {
   });
 
   it('asks once when Beads and .scratch are both detected, then remembers the repo tracker choice', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'to-qa-trackers-'));
-    temporaryDirectories.push(root);
-    const repoPath = join(root, 'sample-repo');
-    await writeBeadsIssues(repoPath);
-    await writeScratchIssues(repoPath);
-    const repository = new QaStorageRepository();
+    const fixture = await createTrackerFixture(temporaryDirectories);
     const chooseTracker = vi.fn(() => 'scratch' as const);
 
     const firstResult = await runToQaForParent({
-      parentIssueId: 'parent-1',
-      repoPath,
-      repoName: 'sample-repo',
-      inboxDir: join(root, 'inbox'),
-      processedDir: join(root, 'processed'),
-      quarantineDir: join(root, 'quarantine'),
-      repository,
+      ...fixture.toQaOptions,
       generatedAt: '2026-05-12T09:00:00.000Z',
       correlationId: 'correlation-1',
       chooseTracker
     });
     const secondResult = await runToQaForParent({
-      parentIssueId: 'parent-1',
-      repoPath,
-      repoName: 'sample-repo',
-      inboxDir: join(root, 'inbox'),
-      processedDir: join(root, 'processed'),
-      quarantineDir: join(root, 'quarantine'),
-      repository,
+      ...fixture.toQaOptions,
       generatedAt: '2026-05-12T09:01:00.000Z',
       correlationId: 'correlation-2',
       chooseTracker
     });
-    repository.close();
+    fixture.repository.close();
 
     expect(chooseTracker).toHaveBeenCalledTimes(1);
-    expect(chooseTracker).toHaveBeenCalledWith({ repoPath, detectedTrackers: ['beads', 'scratch'] });
+    expect(chooseTracker).toHaveBeenCalledWith({ repoPath: fixture.repoPath, detectedTrackers: ['beads', 'scratch'] });
     expect(firstResult.activeSession.tracker).toBe('scratch');
     expect(secondResult.activeSession.tracker).toBe('scratch');
   });
 
   it('fails with selection guidance instead of guessing when no chooser is available', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'to-qa-trackers-'));
-    temporaryDirectories.push(root);
-    const repoPath = join(root, 'sample-repo');
-    await writeBeadsIssues(repoPath);
-    await writeScratchIssues(repoPath);
-    const repository = new QaStorageRepository();
+    const fixture = await createTrackerFixture(temporaryDirectories);
 
     await expect(
-      runToQaForParent({
-        parentIssueId: 'parent-1',
-        repoPath,
-        repoName: 'sample-repo',
-        inboxDir: join(root, 'inbox'),
-        processedDir: join(root, 'processed'),
-        quarantineDir: join(root, 'quarantine'),
-        repository
-      })
+      runToQaForParent(fixture.toQaOptions)
     ).rejects.toThrow(TrackerChoiceRequiredError);
-    repository.close();
+    fixture.repository.close();
   });
 
   it('allows the remembered tracker choice to change without deleting existing QA sessions', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'to-qa-trackers-'));
-    temporaryDirectories.push(root);
-    const repoPath = join(root, 'sample-repo');
-    await writeBeadsIssues(repoPath);
-    await writeScratchIssues(repoPath);
-    const repository = new QaStorageRepository();
+    const fixture = await createTrackerFixture(temporaryDirectories);
 
     const firstResult = await runToQaForParent({
-      parentIssueId: 'parent-1',
-      repoPath,
-      repoName: 'sample-repo',
-      inboxDir: join(root, 'inbox'),
-      processedDir: join(root, 'processed'),
-      quarantineDir: join(root, 'quarantine'),
-      repository,
+      ...fixture.toQaOptions,
       generatedAt: '2026-05-12T09:00:00.000Z',
       correlationId: 'correlation-1',
       chooseTracker: () => 'scratch'
     });
 
-    repository.setRepoTrackerPreference(repoPath, 'beads');
+    fixture.repository.setRepoTrackerPreference(fixture.repoPath, 'beads');
 
     const secondResult = await runToQaForParent({
-      parentIssueId: 'parent-1',
-      repoPath,
-      repoName: 'sample-repo',
-      inboxDir: join(root, 'inbox'),
-      processedDir: join(root, 'processed'),
-      quarantineDir: join(root, 'quarantine'),
-      repository,
+      ...fixture.toQaOptions,
       generatedAt: '2026-05-12T09:01:00.000Z',
       correlationId: 'correlation-2'
     });
-    const activeSession = repository.getMostRecentActiveSession();
-    repository.close();
+    const activeSession = fixture.repository.getMostRecentActiveSession();
+    fixture.repository.close();
 
     expect(firstResult.activeSession.tracker).toBe('scratch');
     expect(secondResult.activeSession.tracker).toBe('beads');
@@ -119,6 +72,33 @@ describe('/to-qa tracker selection', () => {
     expect(firstResult.activeSession.id).toBeDefined();
   });
 });
+
+async function createTrackerFixture(temporaryDirectories: string[]): Promise<{
+  readonly repoPath: string;
+  readonly repository: QaStorageRepository;
+  readonly toQaOptions: ToQaOptions;
+}> {
+  const root = await mkdtemp(join(tmpdir(), 'to-qa-trackers-'));
+  temporaryDirectories.push(root);
+  const repoPath = join(root, 'sample-repo');
+  const repository = new QaStorageRepository();
+  await writeBeadsIssues(repoPath);
+  await writeScratchIssues(repoPath);
+
+  return {
+    repoPath,
+    repository,
+    toQaOptions: {
+      parentIssueId: 'parent-1',
+      repoPath,
+      repoName: 'sample-repo',
+      inboxDir: join(root, 'inbox'),
+      processedDir: join(root, 'processed'),
+      quarantineDir: join(root, 'quarantine'),
+      repository
+    }
+  };
+}
 
 async function writeBeadsIssues(repoPath: string): Promise<void> {
   const beadsDir = join(repoPath, '.beads');

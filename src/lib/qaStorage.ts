@@ -468,9 +468,14 @@ export class QaStorageRepository {
   }
 
   getRepoTrackerPreference(repoPath: string): QaTracker | undefined {
+    const normalizedRepoPath = repoPath.trim();
+    if (normalizedRepoPath.length === 0) {
+      return undefined;
+    }
+
     const row = this.#database
       .prepare(`SELECT tracker FROM repo_tracker_preferences WHERE repo_path = ?`)
-      .get(repoPath) as unknown as { readonly tracker: string } | undefined;
+      .get(normalizedRepoPath) as unknown as RepoTrackerPreferenceRow | undefined;
 
     return row ? toQaTracker(row.tracker) : undefined;
   }
@@ -770,6 +775,10 @@ interface SessionRow {
 interface ArchiveEligibilityItem {
   readonly status: string;
   readonly skip_reason: string | null;
+}
+
+interface RepoTrackerPreferenceRow {
+  readonly tracker: string;
 }
 
 function toQaTracker(value: string): QaTracker {
