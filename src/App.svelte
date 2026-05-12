@@ -14,10 +14,23 @@
     readonly initialState?: AppShellState;
   }
 
+  interface InteractionSettings {
+    passChimeMuted: boolean;
+    passChimeVolume: number;
+  }
+
   type ChecklistFilterStatus = 'all' | QaChecklistStatus;
+  type AudioContextConstructor = new () => AudioContext;
+
+  const interactionSettingsKey = 'qa-to-do.interaction-settings';
+  const defaultInteractionSettings: InteractionSettings = {
+    passChimeMuted: false,
+    passChimeVolume: 0.35
+  };
 
   let { initialState = createInitialShellState() }: AppProps = $props();
   let shellState: AppShellState = $state(createInitialShellState());
+  let interactionSettings: InteractionSettings = $state(readInteractionSettings());
   const activeSession = $derived(shellState.sessions[0]);
   let selectedIndex = $state(0);
   let expandedItemId: string | undefined = $state();
@@ -32,6 +45,7 @@
   let editExpectedResult = $state('');
   let editNote = $state('');
   let skipReason = $state('');
+  const passChimeVolumePercent = $derived(Math.round(interactionSettings.passChimeVolume * 100));
   const healthLabels: Record<HealthState, string> = {
     ready: 'Ready',
     'needs-setup': 'Needs setup',
@@ -83,6 +97,7 @@
     item.status = 'passed';
     item.skipReason = undefined;
     recordHistory(item, 'passed');
+    playPassChime(interactionSettings);
   }
 
   function failItem(item: QaChecklistItem): void {
@@ -203,6 +218,72 @@
     const label = `${event.action.charAt(0).toUpperCase()}${event.action.slice(1)}`;
     return event.detail ? `${label}: ${event.detail}` : label;
   }
+
+  function updatePassChimeMuted(event: Event): void {
+    interactionSettings.passChimeMuted = (event.currentTarget as HTMLInputElement).checked;
+    persistInteractionSettings(interactionSettings);
+  }
+
+  function updatePassChimeVolume(event: Event): void {
+    const volume = Number((event.currentTarget as HTMLInputElement).value) / 100;
+    interactionSettings.passChimeVolume = clampVolume(volume);
+    persistInteractionSettings(interactionSettings);
+  }
+
+  function readInteractionSettings(): InteractionSettings {
+    if (typeof localStorage === 'undefined') return { ...defaultInteractionSettings };
+
+    const stored = localStorage.getItem(interactionSettingsKey);
+    if (!stored) return { ...defaultInteractionSettings };
+
+    try {
+      const parsed = JSON.parse(stored) as Partial<InteractionSettings>;
+      return {
+        passChimeMuted: parsed.passChimeMuted === true,
+        passChimeVolume: clampVolume(parsed.passChimeVolume)
+      };
+    } catch {
+      return { ...defaultInteractionSettings };
+    }
+  }
+
+  function persistInteractionSettings(settings: InteractionSettings): void {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(interactionSettingsKey, JSON.stringify(settings));
+  }
+
+  function playPassChime(settings: InteractionSettings): void {
+    if (settings.passChimeMuted || settings.passChimeVolume <= 0) return;
+    const audioGlobal = globalThis as typeof globalThis & {
+      AudioContext?: AudioContextConstructor;
+      webkitAudioContext?: AudioContextConstructor;
+    };
+    const AudioContextConstructor = audioGlobal.AudioContext ?? audioGlobal.webkitAudioContext;
+    if (!AudioContextConstructor) return;
+
+    try {
+      const context = new AudioContextConstructor();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const now = context.currentTime;
+
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(880, now);
+      gain.gain.setValueAtTime(settings.passChimeVolume, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 0.18);
+    } catch {
+      // Audio feedback is optional; item state should not depend on browser audio support.
+    }
+  }
+
+  function clampVolume(value: unknown): number {
+    const numericValue = typeof value === 'number' && Number.isFinite(value) ? value : defaultInteractionSettings.passChimeVolume;
+    return Math.max(0, Math.min(1, numericValue));
+  }
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
@@ -267,6 +348,35 @@
           <button type="button">Enter Expand</button>
           <button type="button">a Archive</button>
         </div>
+
+        <section class="interaction-settings" aria-labelledby="interaction-settings-title">
+          <div>
+            <p class="section-kicker">Interaction settings</p>
+            <h3 id="interaction-settings-title">Pass chime</h3>
+            <p>Generated in the browser with Web Audio. No sound files are bundled.</p>
+          </div>
+          <label class="mute-control">
+            <input
+              type="checkbox"
+              checked={interactionSettings.passChimeMuted}
+              onchange={updatePassChimeMuted}
+              aria-label="Mute pass chime"
+            />
+            Mute
+          </label>
+          <label>
+            Volume
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={passChimeVolumePercent}
+              oninput={updatePassChimeVolume}
+              aria-label="Pass chime volume"
+            />
+            <span>{passChimeVolumePercent}%</span>
+          </label>
+        </section>
 
         <div class="checklist-tools" aria-label="Checklist filters">
           <label>
@@ -427,6 +537,7 @@
 
 <style>
   .shortcut-preview,
+  .interaction-settings,
   .checklist-tools,
   .checklist-row__summary,
   .row-actions {
@@ -440,8 +551,21 @@
     margin-top: 1rem;
   }
 
+  .interaction-settings {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    border: 1px solid #1f1f1f;
+    justify-content: space-between;
+  }
+
+  .interaction-settings h3,
+  .interaction-settings p {
+    margin: 0;
+  }
+
   .shortcut-preview button,
   .row-actions button,
+  .interaction-settings input,
   .checklist-tools input,
   .checklist-tools select,
   .edit-form input,
@@ -462,6 +586,7 @@
   }
 
   .checklist-tools label,
+  .interaction-settings label,
   .edit-form label,
   .skip-form label {
     display: grid;
