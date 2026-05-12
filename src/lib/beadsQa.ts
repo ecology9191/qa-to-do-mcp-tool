@@ -30,6 +30,11 @@ export class NoCompletedSourceWorkError extends Error {
   }
 }
 
+interface CompletedChildWork {
+  readonly issue: BeadsIssue;
+  readonly acceptanceCriteria: readonly string[];
+}
+
 export function createBeadsQaSessionFromParent(
   parentIssueId: string,
   issues: readonly BeadsIssue[],
@@ -53,22 +58,23 @@ export function createBeadsQaSessionFromParent(
     throw new NoCompletedSourceWorkError(parentIssueId);
   }
 
-  const incompleteWarning =
-    incompleteChildren.length > 0
-      ? [
-          `${incompleteChildren.length} incomplete child issue(s) were excluded from QA: ${incompleteChildren
-            .map((issue) => `${issue.id} (${issue.status})`)
-            .join(', ')}`
-        ]
-      : [];
+  const completedChildWork = completedChildren.map((issue) => ({
+    issue,
+    acceptanceCriteria: extractAcceptanceCriteria(issue.description ?? '')
+  }));
 
-  const items = completedChildren.map((child) => {
-    const acceptanceCriteria = extractAcceptanceCriteria(child.description ?? '');
+  const incompleteWarning = createIncompleteChildrenWarning(incompleteChildren);
+
+  const items = completedChildWork.map(({ issue: child, acceptanceCriteria }) => {
+    const hasAcceptanceCriteria = acceptanceCriteria.length > 0;
     const lowConfidenceWarnings =
-      acceptanceCriteria.length === 0
+      !hasAcceptanceCriteria
         ? [`${child.id} has no explicit acceptance criteria; QA check was inferred from the issue title.`]
         : [];
     const behavior = acceptanceCriteria[0] ?? child.title;
+    const expectedResult = hasAcceptanceCriteria
+      ? acceptanceCriteria.join(' ')
+      : `The completed behavior for ${child.title} is visible and usable by a human reviewer.`;
 
     return {
       id: `beads-${child.id}`,
@@ -78,11 +84,11 @@ export function createBeadsQaSessionFromParent(
         `Exercise the completed behavior: ${behavior}`,
         `Compare the visible result with the source issue evidence before marking the item passed.`
       ],
-      expectedResult: acceptanceCriteria.length > 0 ? acceptanceCriteria.join(' ') : `The completed behavior for ${child.title} is visible and usable by a human reviewer.`,
+      expectedResult,
       fingerprint: `beads:${repo.path}:${parentIssueId}:${child.id}`,
       sourceIssueId: child.id,
-      sourceEvidence: createSourceEvidence(child),
-      confidence: acceptanceCriteria.length > 0 ? 'normal' : 'low',
+      sourceEvidence: createSourceEvidence(child, acceptanceCriteria),
+      confidence: hasAcceptanceCriteria ? 'normal' : 'low',
       warnings: lowConfidenceWarnings
     } as const;
   });
@@ -101,13 +107,13 @@ export function createBeadsQaSessionFromParent(
         title: parent.title,
         status: parent.status
       },
-      sourceIssues: completedChildren.map((child) => ({
+      sourceIssues: completedChildWork.map(({ issue: child, acceptanceCriteria }) => ({
         id: child.id,
         title: child.title,
         status: child.status,
         priority: child.priority,
         closedAt: child.closed_at,
-        evidence: createSourceEvidence(child)
+        evidence: createSourceEvidence(child, acceptanceCriteria)
       })),
       sessionEvidence: [
         { label: 'Parent issue', value: `${parent.id}: ${parent.title}` },
@@ -123,7 +129,16 @@ function isCompletedStatus(status: string): boolean {
   return ['closed', 'completed', 'done'].includes(status.toLowerCase());
 }
 
-function createSourceEvidence(issue: BeadsIssue): SourceEvidence[] {
+function createIncompleteChildrenWarning(incompleteChildren: readonly BeadsIssue[]): string[] {
+  if (incompleteChildren.length === 0) {
+    return [];
+  }
+
+  const issueSummaries = incompleteChildren.map((issue) => `${issue.id} (${issue.status})`).join(', ');
+  return [`${incompleteChildren.length} incomplete child issue(s) were excluded from QA: ${issueSummaries}`];
+}
+
+function createSourceEvidence(issue: BeadsIssue, acceptanceCriteria: readonly string[]): SourceEvidence[] {
   const evidence: SourceEvidence[] = [
     { label: 'Source issue', value: `${issue.id}: ${issue.title}` },
     { label: 'Status', value: issue.status }
@@ -137,7 +152,6 @@ function createSourceEvidence(issue: BeadsIssue): SourceEvidence[] {
     evidence.push({ label: 'Close reason', value: issue.close_reason });
   }
 
-  const acceptanceCriteria = extractAcceptanceCriteria(issue.description ?? '');
   if (acceptanceCriteria.length > 0) {
     evidence.push({ label: 'Acceptance criteria', value: acceptanceCriteria.join(' ') });
   }

@@ -143,14 +143,6 @@ function validateItems(value: unknown, issues: string[]): void {
   const fingerprints = new Set<string>();
   const sourceIssueIds = new Set<string>();
 
-  if (isRecord((value as readonly unknown[])[0])) {
-    for (const item of value as readonly Record<string, unknown>[]) {
-      if (typeof item.sourceIssueId === 'string') {
-        sourceIssueIds.add(item.sourceIssueId);
-      }
-    }
-  }
-
   value.forEach((item, index) => {
     if (!isRecord(item)) {
       issues.push(`items[${index}] must be an object`);
@@ -162,6 +154,10 @@ function validateItems(value: unknown, issues: string[]): void {
     requireString(item.expectedResult, `items[${index}].expectedResult`, issues);
     requireString(item.fingerprint, `items[${index}].fingerprint`, issues);
     requireString(item.sourceIssueId, `items[${index}].sourceIssueId`, issues);
+
+    if (typeof item.sourceIssueId === 'string') {
+      sourceIssueIds.add(item.sourceIssueId);
+    }
 
     if (!Array.isArray(item.steps) || item.steps.length === 0 || !item.steps.every((step) => isNonEmptyString(step))) {
       issues.push(`items[${index}].steps must include human-verifiable steps`);
