@@ -38,7 +38,20 @@ export interface QaChecklistItem {
   status: QaChecklistStatus;
   skipReason?: string;
   note?: string;
+  failureEvidence?: FailureEvidence;
   history: QaChecklistHistoryEvent[];
+}
+
+export interface FailureEvidence {
+  actualBehavior: string;
+  screenshots: FailureScreenshot[];
+}
+
+export interface FailureScreenshot {
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  localReference: string;
 }
 
 export interface QaChecklistHistoryEvent {
