@@ -1,18 +1,12 @@
 <script lang="ts">
-  import { createInitialShellState, emptyStateCommand, type ConfigHealthItem } from './lib/appShell';
+  import { createInitialShellState, emptyStateCommand, type HealthState } from './lib/appShell';
 
   const state = createInitialShellState();
-
-  function healthLabel(item: ConfigHealthItem): string {
-    switch (item.state) {
-      case 'ready':
-        return 'Ready';
-      case 'needs-setup':
-        return 'Needs setup';
-      case 'unknown':
-        return 'Not checked';
-    }
-  }
+  const healthLabels: Record<HealthState, string> = {
+    ready: 'Ready',
+    'needs-setup': 'Needs setup',
+    unknown: 'Not checked'
+  };
 </script>
 
 <svelte:head>
@@ -50,11 +44,11 @@
     </div>
 
     <div class="health-grid">
-      {#each state.configHealth as item}
+      {#each state.configHealth as item (item.id)}
         <article class="health-card" aria-labelledby={`${item.id}-label`}>
           <div class="health-card__topline">
             <h3 id={`${item.id}-label`}>{item.label}</h3>
-            <span class={`status status--${item.state}`}>{healthLabel(item)}</span>
+            <span class={`status status--${item.state}`}>{healthLabels[item.state]}</span>
           </div>
           <p>{item.summary}</p>
         </article>
