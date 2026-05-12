@@ -3,3 +3,10 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Node/Vite artifacts
+node_modules/
+dist/
+
+# Tauri/Rust build artifacts
+src-tauri/target/

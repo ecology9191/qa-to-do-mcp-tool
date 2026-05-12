@@ -1,0 +1,16 @@
+[package]
+name = "qa-to-do"
+version = "0.1.0"
+description = "Local-first QA To Do desktop app"
+authors = ["QA To Do Maintainers"]
+edition = "2021"
+
+[lib]
+name = "qa_to_do_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
