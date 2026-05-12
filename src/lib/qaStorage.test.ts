@@ -81,6 +81,59 @@ describe('QA checklist storage', () => {
     ]);
     expect(activeSession?.items[0].screenshots?.[0]?.localPath).toContain(join('screenshots', sessionId, itemId));
   });
+
+  it('persists manual items and soft delete restore without losing evidence or history', () => {
+    const repository = new QaStorageRepository();
+    const payload = createBeadsQaSessionFromParent('parent-1', issues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+
+    const manualItemId = repository.addManualItem(sessionId, {
+      title: 'Verify keyboard shortcut help',
+      steps: ['Open the active QA session', 'Read the shortcut preview'],
+      expectedResult: 'The shortcut preview lists keyboard controls.',
+      note: 'Added during human QA.'
+    }, '2026-05-12T09:06:00.000Z');
+
+    repository.failItem(sessionId, manualItemId, '2026-05-12T09:07:00.000Z');
+    repository.editItem(sessionId, manualItemId, {
+      title: 'Verify keyboard shortcut help remains visible',
+      steps: ['Open the active QA session'],
+      expectedResult: 'The shortcut preview remains visible.',
+      note: 'Failure notes stay attached.'
+    }, '2026-05-12T09:08:00.000Z');
+    repository.softDeleteItem(sessionId, manualItemId, '2026-05-12T09:09:00.000Z');
+
+    expect(repository.getMostRecentActiveSession()?.items.map((item) => item.id)).not.toContain(manualItemId);
+
+    repository.restoreItem(sessionId, manualItemId, '2026-05-12T09:10:00.000Z');
+    repository.softDeleteSession(sessionId, '2026-05-12T09:11:00.000Z');
+
+    expect(repository.getMostRecentActiveSession()).toBeUndefined();
+
+    repository.restoreSession(sessionId);
+
+    const activeSession = repository.getMostRecentActiveSession();
+    repository.close();
+
+    expect(activeSession?.items.find((item) => item.id === manualItemId)).toMatchObject({
+      sourceType: 'manual',
+      sourceIssueId: 'manual',
+      title: 'Verify keyboard shortcut help remains visible',
+      originalTitle: 'Verify keyboard shortcut help',
+      status: 'failed',
+      note: 'Failure notes stay attached.'
+    });
+    expect(activeSession?.items.find((item) => item.id === manualItemId)?.history.map((event) => event.action)).toEqual([
+      'manual-added',
+      'failed',
+      'edited',
+      'soft-deleted',
+      'restored'
+    ]);
+  });
 });
 
 const issues: BeadsIssue[] = [

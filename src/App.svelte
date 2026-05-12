@@ -32,7 +32,6 @@
   let { initialState = createInitialShellState() }: AppProps = $props();
   let shellState: AppShellState = $state(createInitialShellState());
   let interactionSettings: InteractionSettings = $state(readInteractionSettings());
-  const activeSession = $derived(shellState.sessions[0]);
   let selectedIndex = $state(0);
   let expandedItemId: string | undefined = $state();
   let editingItemId: string | undefined = $state();
@@ -49,14 +48,24 @@
   let failureComposerItemId: string | undefined = $state();
   let failureActualBehavior = $state('');
   let failureScreenshots: FailureScreenshot[] = $state([]);
+  let manualFormOpen = $state(false);
+  let manualTitle = $state('');
+  let manualSteps = $state('');
+  let manualExpectedResult = $state('');
+  let manualNote = $state('');
   const passChimeVolumePercent = $derived(Math.round(interactionSettings.passChimeVolume * 100));
   const healthLabels: Record<HealthState, string> = {
     ready: 'Ready',
     'needs-setup': 'Needs setup',
     unknown: 'Not checked'
   };
-  const sourceIssueOptions = $derived([...new Set((activeSession?.items ?? []).map((item) => item.sourceIssueId))]);
-  const filteredItems = $derived((activeSession?.items ?? []).filter(matchesFilters));
+  const visibleSessions = $derived(shellState.sessions.filter((session) => !session.deletedAt));
+  const deletedSessions = $derived(shellState.sessions.filter((session) => session.deletedAt));
+  const activeSession = $derived(visibleSessions[0]);
+  const visibleItems = $derived((activeSession?.items ?? []).filter((item) => !item.deletedAt));
+  const deletedItems = $derived((activeSession?.items ?? []).filter((item) => item.deletedAt));
+  const sourceIssueOptions = $derived([...new Set(visibleItems.map((item) => item.sourceIssueId))]);
+  const filteredItems = $derived(visibleItems.filter(matchesFilters));
 
   $effect.pre(() => {
     shellState = initialState;
@@ -205,6 +214,82 @@
     editingItemId = undefined;
   }
 
+  function saveManualItem(): void {
+    if (!activeSession?.items) return;
+    const title = manualTitle.trim();
+    const steps = manualSteps
+      .split('\n')
+      .map((step: string) => step.trim())
+      .filter(Boolean);
+    const expectedResult = manualExpectedResult.trim();
+    const note = manualNote.trim();
+    if (title.length === 0 || expectedResult.length === 0 || steps.length === 0) return;
+
+    const item: QaChecklistItem = {
+      id: createManualItemId(title),
+      title,
+      originalTitle: title,
+      steps,
+      originalSteps: steps,
+      expectedResult,
+      originalExpectedResult: expectedResult,
+      sourceIssueId: 'manual',
+      sourceType: 'manual',
+      confidence: 'normal',
+      warnings: [],
+      sourceEvidence: [{ label: 'Manual QA item', value: 'Added by reviewer during QA session.' }],
+      status: 'pending',
+      ...(note ? { note } : {}),
+      history: [historyEvent('manual-added', note || 'Manual QA item added')]
+    };
+
+    activeSession.items = [...activeSession.items, item];
+    refreshSessionItemCount(activeSession);
+    selectedIndex = filteredItems.length;
+    expandedItemId = item.id;
+    manualFormOpen = false;
+    manualTitle = '';
+    manualSteps = '';
+    manualExpectedResult = '';
+    manualNote = '';
+  }
+
+  function softDeleteItem(item: QaChecklistItem): void {
+    item.deletedAt = new Date().toISOString();
+    recordHistory(item, 'soft-deleted');
+    if (expandedItemId === item.id) expandedItemId = undefined;
+    if (historyItemId === item.id) historyItemId = undefined;
+    if (failureComposerItemId === item.id) resetFailureComposer();
+    if (activeSession) refreshSessionItemCount(activeSession);
+    selectedIndex = Math.min(selectedIndex, Math.max(filteredItems.length - 2, 0));
+  }
+
+  function restoreItem(item: QaChecklistItem): void {
+    item.deletedAt = undefined;
+    recordHistory(item, 'restored');
+    if (activeSession) refreshSessionItemCount(activeSession);
+  }
+
+  function softDeleteSession(session: NonNullable<typeof activeSession>): void {
+    session.deletedAt = new Date().toISOString();
+    selectedIndex = 0;
+    expandedItemId = undefined;
+    resetFailureComposer();
+  }
+
+  function restoreSession(session: NonNullable<typeof activeSession>): void {
+    session.deletedAt = undefined;
+  }
+
+  function refreshSessionItemCount(session: NonNullable<typeof activeSession>): void {
+    session.itemCount = session.items?.filter((item) => !item.deletedAt).length ?? session.itemCount;
+  }
+
+  function createManualItemId(title: string): string {
+    const suffix = `${Date.now()}-${title}`.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    return `manual-${suffix || 'item'}`;
+  }
+
   function toggleExpanded(item: QaChecklistItem): void {
     expandedItemId = expandedItemId === item.id ? undefined : item.id;
   }
@@ -215,7 +300,7 @@
   }
 
   function handleGlobalKeydown(event: KeyboardEvent): void {
-    if (isTypingTarget(event.target) || event.defaultPrevented || !activeSession?.items?.length) return;
+    if (isTypingTarget(event.target) || event.defaultPrevented || visibleItems.length === 0) return;
 
     const item = selectedItem();
     if (!item) return;
@@ -274,7 +359,17 @@
   }
 
   function formatHistory(event: QaChecklistHistoryEvent): string {
-    const label = `${event.action.charAt(0).toUpperCase()}${event.action.slice(1)}`;
+    const labels: Record<QaChecklistHistoryAction, string> = {
+      'manual-added': 'Manual item added',
+      passed: 'Passed',
+      unpassed: 'Unpassed',
+      failed: 'Failed',
+      skipped: 'Skipped',
+      edited: 'Edited',
+      'soft-deleted': 'Soft deleted',
+      restored: 'Restored'
+    };
+    const label = labels[event.action];
     return event.detail ? `${label}: ${event.detail}` : label;
   }
 
@@ -396,6 +491,7 @@
         {#if activeSession.warnings.length > 0}
           <span>{activeSession.warnings.length} warning{activeSession.warnings.length === 1 ? '' : 's'}</span>
         {/if}
+        <button type="button" onclick={() => softDeleteSession(activeSession)} aria-label={`Delete session ${activeSession.title}`}>Delete session</button>
       </div>
       {#if activeSession.warnings.length > 0}
         <ul class="warning-list" aria-label="Session warnings">
@@ -443,6 +539,25 @@
             />
             <span>{passChimeVolumePercent}%</span>
           </label>
+        </section>
+
+        <section class="manual-item" aria-labelledby="manual-item-title">
+          <div>
+            <p class="section-kicker">Coverage gaps</p>
+            <h3 id="manual-item-title">Manual QA items</h3>
+            <p>Add lightweight reviewer checks without mixing them up with generated coverage.</p>
+          </div>
+          {#if manualFormOpen}
+            <div class="manual-form">
+              <label>Manual title<input bind:value={manualTitle} aria-label="Manual title" /></label>
+              <label>Manual steps<textarea bind:value={manualSteps} aria-label="Manual steps"></textarea></label>
+              <label>Manual expected result<textarea bind:value={manualExpectedResult} aria-label="Manual expected result"></textarea></label>
+              <label>Manual notes<textarea bind:value={manualNote} aria-label="Manual notes"></textarea></label>
+              <button type="button" onclick={saveManualItem}>Save manual item</button>
+            </div>
+          {:else}
+            <button type="button" onclick={() => (manualFormOpen = true)}>Add manual item</button>
+          {/if}
         </section>
 
         <div class="checklist-tools" aria-label="Checklist filters">
@@ -497,6 +612,9 @@
                   <span aria-hidden="true">{item.status === 'passed' ? '✓' : ''}</span>
                 </button>
                 <span class="source-badge">{item.sourceIssueId}</span>
+                {#if item.sourceType === 'manual'}
+                  <span class="manual-badge">Manual</span>
+                {/if}
                 <button class="row-title" type="button" onclick={() => toggleExpanded(item)}>{item.title}</button>
                 {#if item.confidence === 'low'}
                   <span class="low-confidence">Low confidence</span>
@@ -508,6 +626,7 @@
                 <button type="button" onclick={() => startSkip(item)} aria-label={`Skip ${item.title}`}>Skip</button>
                 <button type="button" onclick={() => startEdit(item)} aria-label={`Edit ${item.title}`}>Edit</button>
                 <button type="button" onclick={() => toggleHistory(item)} aria-label={`History ${item.title}`}>History</button>
+                <button type="button" onclick={() => softDeleteItem(item)} aria-label={`Delete item ${item.title}`}>Delete</button>
               </div>
 
               {#if expandedItemId === item.id}
@@ -636,7 +755,38 @@
             </div>
           {/each}
         </div>
+
+        {#if deletedItems.length > 0}
+          <section class="restore-panel" aria-label="Deleted QA items">
+            <h3>Deleted QA items</h3>
+            <ul>
+              {#each deletedItems as item (item.id)}
+                <li>
+                  <span>{item.title}</span>
+                  {#if item.sourceType === 'manual'}
+                    <span class="manual-badge">Manual</span>
+                  {/if}
+                  <button type="button" onclick={() => restoreItem(item)} aria-label={`Restore item ${item.title}`}>Restore</button>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
       {/if}
+    </section>
+  {/if}
+
+  {#if deletedSessions.length > 0}
+    <section class="restore-panel" aria-label="Deleted sessions">
+      <h2>Deleted sessions</h2>
+      <ul>
+        {#each deletedSessions as session (session.id)}
+          <li>
+            <span>{session.title}</span>
+            <button type="button" onclick={() => restoreSession(session)} aria-label={`Restore session ${session.title}`}>Restore</button>
+          </li>
+        {/each}
+      </ul>
     </section>
   {/if}
 
@@ -663,6 +813,7 @@
 <style>
   .shortcut-preview,
   .interaction-settings,
+  .manual-item,
   .checklist-tools,
   .checklist-row__summary,
   .row-actions {
@@ -683,8 +834,17 @@
     justify-content: space-between;
   }
 
+  .manual-item,
+  .restore-panel {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    border: 1px solid #1f1f1f;
+  }
+
   .interaction-settings h3,
-  .interaction-settings p {
+  .interaction-settings p,
+  .manual-item h3,
+  .manual-item p {
     margin: 0;
   }
 
@@ -695,6 +855,8 @@
   .checklist-tools select,
   .edit-form input,
   .edit-form textarea,
+  .manual-form input,
+  .manual-form textarea,
   .skip-form input,
   .failure-composer textarea,
   .failure-composer input {
@@ -715,6 +877,7 @@
   .checklist-tools label,
   .interaction-settings label,
   .edit-form label,
+  .manual-form label,
   .skip-form label,
   .failure-composer label {
     display: grid;
@@ -755,6 +918,7 @@
 
   .source-badge,
   .low-confidence,
+  .manual-badge,
   .item-state {
     border: 1px solid #1f1f1f;
     padding: 0.1rem 0.35rem;
@@ -763,6 +927,11 @@
 
   .low-confidence {
     border-style: dashed;
+  }
+
+  .manual-badge {
+    background: #111;
+    color: #fff;
   }
 
   .row-title {
@@ -779,6 +948,7 @@
   }
 
   .edit-form,
+  .manual-form,
   .skip-form,
   .failure-composer {
     display: grid;

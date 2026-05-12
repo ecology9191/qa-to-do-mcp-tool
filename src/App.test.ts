@@ -138,6 +138,51 @@ describe('App shell', () => {
     expect(screen.getByText(/Screenshots: callback.png/i)).toBeInTheDocument();
   });
 
+  it('adds manual QA items and lets them use the same checklist flow', async () => {
+    render(App, { props: { initialState: createChecklistState() } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add manual item' }));
+    await fireEvent.input(screen.getByLabelText('Manual title'), { target: { value: 'Verify keyboard shortcut help' } });
+    await fireEvent.input(screen.getByLabelText('Manual steps'), { target: { value: 'Open the active QA session\nRead the shortcut preview' } });
+    await fireEvent.input(screen.getByLabelText('Manual expected result'), {
+      target: { value: 'The shortcut preview lists keyboard controls.' }
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Save manual item' }));
+
+    expect(screen.getByText('Verify keyboard shortcut help')).toBeInTheDocument();
+    expect(screen.getByText('Manual')).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify keyboard shortcut help passed/i }));
+    expect(screen.getByRole('row', { name: /manual Verify keyboard shortcut help passed/i })).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: /fail Verify keyboard shortcut help/i }));
+    expect(screen.getByRole('heading', { name: /Failure evidence for Verify keyboard shortcut help/i })).toBeInTheDocument();
+    expect(screen.getByLabelText('Actual behavior')).toBeRequired();
+  });
+
+  it('soft deletes and restores sessions and items without losing history', async () => {
+    render(App, { props: { initialState: createChecklistState() } });
+
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
+    await fireEvent.click(screen.getByRole('button', { name: /delete item Verify login redirect/i }));
+
+    expect(screen.queryByRole('row', { name: /child-1 Verify login redirect passed/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Deleted QA items')).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore item Verify login redirect/i }));
+    expect(screen.getByText('Verify login redirect')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: /history Verify login redirect/i }));
+    expect(screen.getAllByText('Passed').length).toBeGreaterThan(0);
+    expect(screen.getByText('Restored')).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: /delete session sample-repo parent-1 QA/i }));
+    expect(screen.queryByRole('heading', { name: 'sample-repo parent-1 QA' })).not.toBeInTheDocument();
+    expect(screen.getByText('Deleted sessions')).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: /restore session sample-repo parent-1 QA/i }));
+    expect(screen.getByRole('heading', { name: 'sample-repo parent-1 QA' })).toBeInTheDocument();
+  });
+
   it('plays a generated pass chime with locally persisted mute and volume controls', async () => {
     const audio = installAudioContextStub();
 

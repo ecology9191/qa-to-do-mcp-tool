@@ -26,6 +26,7 @@ export interface ActiveQaItem {
   readonly expectedResult: string;
   readonly originalExpectedResult: string;
   readonly sourceIssueId: string;
+  readonly sourceType: 'generated' | 'manual';
   readonly fingerprint: string;
   readonly confidence: 'normal' | 'low';
   readonly warnings: readonly string[];
@@ -39,7 +40,7 @@ export interface ActiveQaItem {
 
 export type QaItemStatus = 'pending' | 'passed' | 'failed' | 'skipped';
 
-type QaItemHistoryAction = 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited';
+type QaItemHistoryAction = 'manual-added' | 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited' | 'soft-deleted' | 'restored';
 
 export interface QaItemHistoryEvent {
   readonly action: QaItemHistoryAction;
@@ -48,6 +49,13 @@ export interface QaItemHistoryEvent {
 }
 
 export interface QaItemEdit {
+  readonly title: string;
+  readonly steps: readonly string[];
+  readonly expectedResult: string;
+  readonly note?: string;
+}
+
+export interface ManualQaItemInput {
   readonly title: string;
   readonly steps: readonly string[];
   readonly expectedResult: string;
@@ -99,7 +107,8 @@ export class QaStorageRepository {
         warnings_json TEXT NOT NULL,
         source_evidence_json TEXT NOT NULL,
         raw_payload_json TEXT NOT NULL,
-        archived_at TEXT
+        archived_at TEXT,
+        deleted_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS qa_items (
@@ -113,12 +122,14 @@ export class QaStorageRepository {
         original_expected_result TEXT NOT NULL,
         fingerprint TEXT NOT NULL UNIQUE,
         source_issue_id TEXT NOT NULL,
+        source_type TEXT NOT NULL DEFAULT 'generated',
         confidence TEXT NOT NULL,
         warnings_json TEXT NOT NULL,
         source_evidence_json TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
         skip_reason TEXT,
-        note TEXT
+        note TEXT,
+        deleted_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS qa_item_history (
@@ -142,6 +153,9 @@ export class QaStorageRepository {
         captured_at TEXT NOT NULL
       );
     `);
+    this.#ensureColumn('qa_sessions', 'deleted_at', 'TEXT');
+    this.#ensureColumn('qa_items', 'source_type', `TEXT NOT NULL DEFAULT 'generated'`);
+    this.#ensureColumn('qa_items', 'deleted_at', 'TEXT');
   }
 
   importSession(payload: QaSessionPayload, importedAt = new Date().toISOString()): string {
@@ -149,14 +163,14 @@ export class QaStorageRepository {
     const insertSession = this.#database.prepare(`
       INSERT OR REPLACE INTO qa_sessions (
         id, title, tracker, repo_name, repo_path, parent_issue_id, parent_issue_title, parent_issue_status,
-        generated_at, imported_at, warnings_json, source_evidence_json, raw_payload_json, archived_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        generated_at, imported_at, warnings_json, source_evidence_json, raw_payload_json, archived_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
     `);
     const insertItem = this.#database.prepare(`
       INSERT OR IGNORE INTO qa_items (
         id, session_id, title, original_title, steps_json, original_steps_json, expected_result, original_expected_result,
-        fingerprint, source_issue_id, confidence, warnings_json, source_evidence_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        fingerprint, source_issue_id, source_type, confidence, warnings_json, source_evidence_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     this.#database.exec('BEGIN');
@@ -189,6 +203,7 @@ export class QaStorageRepository {
           item.expectedResult,
           item.fingerprint,
           item.sourceIssueId,
+          'generated',
           item.confidence,
           JSON.stringify(item.warnings),
           JSON.stringify(item.sourceEvidence)
@@ -200,6 +215,51 @@ export class QaStorageRepository {
       throw error;
     }
     return sessionId;
+  }
+
+  addManualItem(sessionId: string, item: ManualQaItemInput, createdAt = new Date().toISOString()): string {
+    const title = item.title.trim();
+    const steps = item.steps.map((step) => step.trim()).filter(Boolean);
+    const expectedResult = item.expectedResult.trim();
+    const note = item.note?.trim();
+
+    if (title.length === 0 || expectedResult.length === 0 || steps.length === 0) {
+      throw new Error('Manual QA items require title, steps, and expected result.');
+    }
+
+    this.#ensureSessionExists(sessionId);
+    const itemId = createManualItemId(sessionId, title, createdAt);
+    const sourceEvidence: SourceEvidence[] = [{ label: 'Manual QA item', value: 'Added by reviewer during QA session.' }];
+
+    this.#runInTransaction(() => {
+      this.#database
+        .prepare(`
+          INSERT INTO qa_items (
+            id, session_id, title, original_title, steps_json, original_steps_json, expected_result, original_expected_result,
+            fingerprint, source_issue_id, source_type, confidence, warnings_json, source_evidence_json, note
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          itemId,
+          sessionId,
+          title,
+          title,
+          JSON.stringify(steps),
+          JSON.stringify(steps),
+          expectedResult,
+          expectedResult,
+          `manual:${itemId}`,
+          'manual',
+          'manual',
+          'normal',
+          JSON.stringify([]),
+          JSON.stringify(sourceEvidence),
+          note || null
+        );
+      this.#recordHistory(sessionId, itemId, 'manual-added', note || 'Manual QA item added', createdAt);
+    });
+
+    return itemId;
   }
 
   togglePassItem(sessionId: string, itemId: string, createdAt = new Date().toISOString()): void {
@@ -313,6 +373,32 @@ export class QaStorageRepository {
     };
   }
 
+  softDeleteItem(sessionId: string, itemId: string, deletedAt = new Date().toISOString()): void {
+    this.#ensureItemExists(sessionId, itemId);
+    this.#runInTransaction(() => {
+      this.#database.prepare(`UPDATE qa_items SET deleted_at = ? WHERE session_id = ? AND id = ?`).run(deletedAt, sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, 'soft-deleted', undefined, deletedAt);
+    });
+  }
+
+  restoreItem(sessionId: string, itemId: string, restoredAt = new Date().toISOString()): void {
+    this.#ensureItemExists(sessionId, itemId);
+    this.#runInTransaction(() => {
+      this.#database.prepare(`UPDATE qa_items SET deleted_at = NULL WHERE session_id = ? AND id = ?`).run(sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, 'restored', undefined, restoredAt);
+    });
+  }
+
+  softDeleteSession(sessionId: string, deletedAt = new Date().toISOString()): void {
+    this.#ensureSessionExists(sessionId);
+    this.#database.prepare(`UPDATE qa_sessions SET deleted_at = ? WHERE id = ?`).run(deletedAt, sessionId);
+  }
+
+  restoreSession(sessionId: string): void {
+    this.#ensureSessionExists(sessionId);
+    this.#database.prepare(`UPDATE qa_sessions SET deleted_at = NULL WHERE id = ?`).run(sessionId);
+  }
+
   #runInTransaction(action: () => void): void {
     this.#database.exec('BEGIN');
     try {
@@ -327,7 +413,7 @@ export class QaStorageRepository {
   getMostRecentActiveSession(): ActiveQaSession | undefined {
     const session = this.#database
       .prepare(
-        `SELECT * FROM qa_sessions WHERE archived_at IS NULL ORDER BY imported_at DESC, generated_at DESC LIMIT 1`
+        `SELECT * FROM qa_sessions WHERE archived_at IS NULL AND deleted_at IS NULL ORDER BY imported_at DESC, generated_at DESC LIMIT 1`
       )
       .get() as unknown as SessionRow | undefined;
 
@@ -336,7 +422,7 @@ export class QaStorageRepository {
     }
 
     const itemRows = this.#database
-      .prepare(`SELECT * FROM qa_items WHERE session_id = ? ORDER BY rowid ASC`)
+      .prepare(`SELECT * FROM qa_items WHERE session_id = ? AND deleted_at IS NULL ORDER BY rowid ASC`)
       .all(session.id) as unknown as ItemRow[];
 
     return {
@@ -366,6 +452,19 @@ export class QaStorageRepository {
     }
 
     return { status: toQaItemStatus(row.status) };
+  }
+
+  #ensureSessionExists(sessionId: string): void {
+    const row = this.#database.prepare(`SELECT id FROM qa_sessions WHERE id = ?`).get(sessionId) as unknown as { readonly id: string } | undefined;
+    if (!row) {
+      throw new Error(`QA session ${sessionId} was not found.`);
+    }
+  }
+
+  #ensureColumn(tableName: string, columnName: string, definition: string): void {
+    const rows = this.#database.prepare(`PRAGMA table_info(${tableName})`).all() as unknown as Array<{ readonly name: string }>;
+    if (rows.some((row) => row.name === columnName)) return;
+    this.#database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 
   #recordHistory(
@@ -419,6 +518,7 @@ function toActiveItem(
     expectedResult: item.expected_result,
     originalExpectedResult: item.original_expected_result,
     sourceIssueId: item.source_issue_id,
+    sourceType: item.source_type === 'manual' ? 'manual' : 'generated',
     fingerprint: item.fingerprint,
     confidence: item.confidence === 'low' ? 'low' : 'normal',
     warnings: parseJson<string[]>(item.warnings_json),
@@ -440,11 +540,14 @@ function toQaItemStatus(value: string): QaItemStatus {
 
 function toHistoryAction(value: string): QaItemHistoryAction {
   switch (value) {
+    case 'manual-added':
     case 'passed':
     case 'unpassed':
     case 'failed':
     case 'skipped':
     case 'edited':
+    case 'soft-deleted':
+    case 'restored':
       return value;
     default:
       throw new Error(`Unknown QA item history action: ${value}`);
@@ -454,6 +557,10 @@ function toHistoryAction(value: string): QaItemHistoryAction {
 function createSessionId(payload: QaSessionPayload): string {
   const source = `${payload.source.repo.path}:${payload.source.parentIssue.id}:${payload.generatedAt}`;
   return `session-${Buffer.from(source).toString('base64url').slice(0, 32)}`;
+}
+
+function createManualItemId(sessionId: string, title: string, createdAt: string): string {
+  return `manual-${Buffer.from(`${sessionId}:${title}:${createdAt}`).toString('base64url').slice(0, 32)}`;
 }
 
 function parseJson<T>(value: string): T {
@@ -523,6 +630,7 @@ interface ItemRow {
   readonly expected_result: string;
   readonly original_expected_result: string;
   readonly source_issue_id: string;
+  readonly source_type: string;
   readonly fingerprint: string;
   readonly confidence: string;
   readonly warnings_json: string;
