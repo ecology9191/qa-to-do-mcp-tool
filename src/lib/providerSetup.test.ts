@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,16 +8,24 @@ import { applyProviderSetupPlan, createProviderSetupPlan } from './providerSetup
 describe('provider setup', () => {
   const temporaryDirectories: string[] = [];
 
+  async function createTemporaryDirectory(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'qa-to-do-setup-'));
+    temporaryDirectories.push(root);
+    return root;
+  }
+
+  async function writeJsonFile(path: string, value: unknown): Promise<void> {
+    await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+  }
+
   afterEach(async () => {
     await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
   });
 
   it('previews and applies exact safe OpenCode skill, command, and MCP config changes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'qa-to-do-setup-'));
-    temporaryDirectories.push(root);
-    await mkdir(root, { recursive: true });
+    const root = await createTemporaryDirectory();
     const configPath = join(root, 'opencode.json');
-    await writeFile(configPath, `${JSON.stringify({ theme: 'system', mcp: { existing: { type: 'local', command: ['existing'] } } }, null, 2)}\n`);
+    await writeJsonFile(configPath, { theme: 'system', mcp: { existing: { type: 'local', command: ['existing'] } } });
 
     const plan = await createProviderSetupPlan({
       provider: 'opencode',
@@ -52,24 +60,22 @@ describe('provider setup', () => {
   });
 
   it('refuses to apply a stale preview instead of silently overwriting OpenCode config', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'qa-to-do-setup-'));
-    temporaryDirectories.push(root);
+    const root = await createTemporaryDirectory();
     const configPath = join(root, 'opencode.json');
-    await writeFile(configPath, `${JSON.stringify({ mcp: {} }, null, 2)}\n`);
+    await writeJsonFile(configPath, { mcp: {} });
     const plan = await createProviderSetupPlan({
       provider: 'opencode',
       configDir: root,
       mcpCommand: ['qa-to-do', 'mcp']
     });
-    await writeFile(configPath, `${JSON.stringify({ mcp: { changed: { type: 'local', command: ['changed'] } } }, null, 2)}\n`);
+    await writeJsonFile(configPath, { mcp: { changed: { type: 'local', command: ['changed'] } } });
 
     await expect(applyProviderSetupPlan(plan)).rejects.toThrow('changed since preview');
     await expect(readFile(configPath, 'utf8')).resolves.toContain('changed');
   });
 
   it('falls back to manual instructions for unsupported providers without writing setup files', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'qa-to-do-setup-'));
-    temporaryDirectories.push(root);
+    const root = await createTemporaryDirectory();
     const plan = await createProviderSetupPlan({
       provider: 'cursor',
       configDir: root,
@@ -85,13 +91,12 @@ describe('provider setup', () => {
   });
 
   it('falls back to manual instructions for unknown or conflicting OpenCode config shapes', async () => {
-    const unknownRoot = await mkdtemp(join(tmpdir(), 'qa-to-do-setup-'));
-    const conflictingRoot = await mkdtemp(join(tmpdir(), 'qa-to-do-setup-'));
-    temporaryDirectories.push(unknownRoot, conflictingRoot);
-    await writeFile(join(unknownRoot, 'opencode.json'), `${JSON.stringify({ mcp: ['not-safe'] }, null, 2)}\n`);
-    await writeFile(join(conflictingRoot, 'opencode.json'), `${JSON.stringify({
+    const unknownRoot = await createTemporaryDirectory();
+    const conflictingRoot = await createTemporaryDirectory();
+    await writeJsonFile(join(unknownRoot, 'opencode.json'), { mcp: ['not-safe'] });
+    await writeJsonFile(join(conflictingRoot, 'opencode.json'), {
       mcp: { 'qa-to-do': { type: 'remote', url: 'https://example.invalid/mcp', enabled: true } }
-    }, null, 2)}\n`);
+    });
 
     const unknownPlan = await createProviderSetupPlan({
       provider: 'opencode',
@@ -113,8 +118,7 @@ describe('provider setup', () => {
   });
 
   it('does not preview app-managed secrets in OpenCode setup files', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'qa-to-do-setup-'));
-    temporaryDirectories.push(root);
+    const root = await createTemporaryDirectory();
     const plan = await createProviderSetupPlan({
       provider: 'opencode',
       configDir: root,

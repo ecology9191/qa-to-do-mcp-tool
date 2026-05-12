@@ -40,6 +40,10 @@ export class ProviderSetupApplyError extends Error {
 const openCodeSchema = 'https://opencode.ai/config.json';
 const mcpServerName = 'qa-to-do';
 
+type OpenCodeConfigOperationResult =
+  | { readonly status: 'ready'; readonly operation: ProviderSetupOperation }
+  | { readonly status: 'manual'; readonly manualInstructions: readonly string[] };
+
 export async function createProviderSetupPlan(options: ProviderSetupOptions): Promise<ProviderSetupPlan> {
   if (options.provider !== 'opencode') {
     return {
@@ -119,13 +123,17 @@ function createOpenCodeConfigOperation(
   configPath: string,
   configRead: OptionalFileRead,
   mcpCommand: readonly string[]
-): { readonly status: 'ready'; readonly operation: ProviderSetupOperation } | { readonly status: 'manual'; readonly manualInstructions: readonly string[] } {
+): OpenCodeConfigOperationResult {
   const desiredMcp = { type: 'local', command: [...mcpCommand], enabled: true };
 
   if (!configRead.exists) {
     return {
       status: 'ready',
-      operation: createFileOperation(configPath, configRead, stringifyConfig({ $schema: openCodeSchema, mcp: { [mcpServerName]: desiredMcp } }))
+      operation: createFileOperation(
+        configPath,
+        configRead,
+        stringifyConfig({ $schema: openCodeSchema, mcp: { [mcpServerName]: desiredMcp } })
+      )
     };
   }
 
