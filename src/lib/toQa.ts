@@ -4,6 +4,7 @@ import { createBeadsQaSessionFromParent, type BeadsIssue } from './beadsQa';
 import { importQaSessionInboxEntries, type InboxImportResult } from './inboxImporter';
 import { writeQaSessionInboxEntry } from './mcpInbox';
 import type { ActiveQaSession, QaStorageRepository } from './qaStorage';
+import { createScratchQaSessionFromParent, readScratchIssues } from './scratchQa';
 
 export interface ToQaBeadsOptions {
   readonly parentIssueId: string;
@@ -24,9 +25,53 @@ export interface ToQaBeadsResult {
   readonly activeSession: ActiveQaSession;
 }
 
+export interface ToQaScratchOptions {
+  readonly parentIssueId: string;
+  readonly repoPath: string;
+  readonly repoName?: string;
+  readonly scratchDir?: string;
+  readonly inboxDir: string;
+  readonly processedDir: string;
+  readonly quarantineDir: string;
+  readonly repository: QaStorageRepository;
+  readonly generatedAt?: string;
+  readonly correlationId?: string;
+}
+
+export type ToQaScratchResult = ToQaBeadsResult;
+
 export async function runToQaForBeadsParent(options: ToQaBeadsOptions): Promise<ToQaBeadsResult> {
   const issues = await readBeadsIssues(options.beadsIssuesPath ?? join(options.repoPath, '.beads', 'issues.jsonl'));
   const payload = createBeadsQaSessionFromParent(
+    options.parentIssueId,
+    issues,
+    {
+      name: options.repoName ?? basename(options.repoPath),
+      path: options.repoPath
+    },
+    options.generatedAt
+  );
+  const inboxEntryPath = await writeQaSessionInboxEntry(options.inboxDir, payload, {
+    correlationId: options.correlationId
+  });
+  const importResult = await importQaSessionInboxEntries(
+    [inboxEntryPath],
+    options.repository,
+    options.processedDir,
+    options.quarantineDir
+  );
+  const activeSession = options.repository.getMostRecentActiveSession();
+
+  if (!activeSession) {
+    throw new Error('QA session inbox entry imported, but no active session was found in storage.');
+  }
+
+  return { inboxEntryPath, importResult, activeSession };
+}
+
+export async function runToQaForScratchParent(options: ToQaScratchOptions): Promise<ToQaScratchResult> {
+  const issues = await readScratchIssues(options.scratchDir ?? join(options.repoPath, '.scratch'));
+  const payload = createScratchQaSessionFromParent(
     options.parentIssueId,
     issues,
     {
