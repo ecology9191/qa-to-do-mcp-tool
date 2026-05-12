@@ -38,6 +38,7 @@
   let skipItemId: string | undefined = $state();
   let historyItemId: string | undefined = $state();
   let searchQuery = $state('');
+  let archivedSearchQuery = $state('');
   let statusFilter: ChecklistFilterStatus = $state('all');
   let sourceFilter = $state('all');
   let editTitle = $state('');
@@ -59,7 +60,9 @@
     'needs-setup': 'Needs setup',
     unknown: 'Not checked'
   };
-  const visibleSessions = $derived(shellState.sessions.filter((session) => !session.deletedAt));
+  const visibleSessions = $derived(shellState.sessions.filter((session) => !session.deletedAt && !session.archivedAt));
+  const archivedSessions = $derived(shellState.sessions.filter((session) => !session.deletedAt && session.archivedAt));
+  const filteredArchivedSessions = $derived(archivedSessions.filter(matchesArchivedSearch));
   const deletedSessions = $derived(shellState.sessions.filter((session) => session.deletedAt));
   const activeSession = $derived(visibleSessions[0]);
   const visibleItems = $derived((activeSession?.items ?? []).filter((item) => !item.deletedAt));
@@ -90,6 +93,38 @@
       (statusFilter === 'all' || item.status === statusFilter) &&
       (sourceFilter === 'all' || item.sourceIssueId === sourceFilter)
     );
+  }
+
+  function matchesArchivedSearch(session: AppShellState['sessions'][number]): boolean {
+    const query = archivedSearchQuery.trim().toLowerCase();
+    if (query.length === 0) return true;
+
+    const searchable = [
+      session.title,
+      session.repoName,
+      session.parentIssueId,
+      session.parentIssueTitle,
+      ...session.warnings,
+      ...(session.items ?? []).flatMap((item) => [
+        item.title,
+        item.originalTitle,
+        item.expectedResult,
+        item.originalExpectedResult,
+        item.sourceIssueId,
+        item.note ?? '',
+        item.skipReason ?? '',
+        ...item.steps,
+        ...item.originalSteps,
+        ...item.warnings,
+        ...item.sourceEvidence.map((evidence) => `${evidence.label} ${evidence.value}`),
+        ...item.history.map((event) => `${event.action} ${event.detail ?? ''}`),
+        ...(item.failureEvidence?.screenshots.map((screenshot) => `${screenshot.name} ${screenshot.localReference}`) ?? [])
+      ])
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return searchable.includes(query);
   }
 
   function selectedItem(): QaChecklistItem | undefined {
@@ -289,6 +324,29 @@
     session.deletedAt = undefined;
   }
 
+  function archiveSession(session: NonNullable<typeof activeSession>): void {
+    if (!isArchiveEligible(session)) return;
+    session.archivedAt = new Date().toISOString();
+    selectedIndex = 0;
+    expandedItemId = undefined;
+    resetFailureComposer();
+  }
+
+  function isArchiveEligible(session: NonNullable<typeof activeSession>): boolean {
+    const items = session.items?.filter((item) => !item.deletedAt) ?? [];
+    return items.length > 0 && items.every(isTerminalForArchive);
+  }
+
+  function isTerminalForArchive(item: QaChecklistItem): boolean {
+    return item.status === 'passed' || item.status === 'failed-filed' || (item.status === 'skipped' && Boolean(item.skipReason?.trim()));
+  }
+
+  function archiveBlockedMessage(session: NonNullable<typeof activeSession>): string {
+    const unresolvedCount = (session.items ?? []).filter((item) => !item.deletedAt && !isTerminalForArchive(item)).length;
+    if (unresolvedCount === 0) return 'Ready for manual app-only archive. No tracker state will be changed.';
+    return `${unresolvedCount} item${unresolvedCount === 1 ? '' : 's'} still need pass, filed failure, or skip reason before archive.`;
+  }
+
   function refreshSessionItemCount(session: NonNullable<typeof activeSession>): void {
     session.itemCount = session.items?.filter((item) => !item.deletedAt).length ?? session.itemCount;
   }
@@ -348,7 +406,7 @@
         break;
       case 'a':
         event.preventDefault();
-        expandedItemId = undefined;
+        if (activeSession) archiveSession(activeSession);
         break;
     }
   }
@@ -372,6 +430,7 @@
       passed: 'Passed',
       unpassed: 'Unpassed',
       failed: 'Failed',
+      'failed-filed': 'Filed failure',
       skipped: 'Skipped',
       edited: 'Edited',
       'soft-deleted': 'Soft deleted',
@@ -499,8 +558,17 @@
         {#if activeSession.warnings.length > 0}
           <span>{activeSession.warnings.length} warning{activeSession.warnings.length === 1 ? '' : 's'}</span>
         {/if}
+        <button
+          type="button"
+          disabled={!isArchiveEligible(activeSession)}
+          onclick={() => archiveSession(activeSession)}
+          aria-label={`Archive session ${activeSession.title}`}
+        >
+          Archive session
+        </button>
         <button type="button" onclick={() => softDeleteSession(activeSession)} aria-label={`Delete session ${activeSession.title}`}>Delete session</button>
       </div>
+      <p class="archive-guidance">{archiveBlockedMessage(activeSession)}</p>
       {#if activeSession.warnings.length > 0}
         <ul class="warning-list" aria-label="Session warnings">
           {#each activeSession.warnings as warning}
@@ -585,6 +653,7 @@
               <option value="pending">Pending</option>
               <option value="passed">Passed</option>
               <option value="failed">Failed</option>
+              <option value="failed-filed">Failed filed</option>
               <option value="skipped">Skipped</option>
             </select>
           </label>
@@ -784,6 +853,50 @@
     </section>
   {/if}
 
+  {#if archivedSessions.length > 0}
+    <section class="archive-panel" aria-labelledby="archived-sessions-title">
+      <div>
+        <p class="section-kicker">App-only archive</p>
+        <h2 id="archived-sessions-title">Archived sessions</h2>
+        <p>Archived QA sessions stay local and searchable with their evidence, notes, and state history.</p>
+      </div>
+      <label>
+        Search archived sessions
+        <input bind:value={archivedSearchQuery} aria-label="Search archived sessions" placeholder="Search archived QA evidence" />
+      </label>
+      {#if filteredArchivedSessions.length === 0}
+        <p>No archived sessions match that search.</p>
+      {:else}
+        <div class="archive-results">
+          {#each filteredArchivedSessions as session (session.id)}
+            <article class="archive-card" aria-label={`Archived session ${session.title}`}>
+              <h3>{session.title}</h3>
+              <p>
+                {session.repoName} · <code>{session.parentIssueId}</code>{#if session.archivedAt} · Archived {session.archivedAt}{/if}
+              </p>
+              {#if session.items && session.items.length > 0}
+                <ul>
+                  {#each session.items.filter((item) => !item.deletedAt) as item (item.id)}
+                    <li>
+                      <strong>{item.title}</strong>
+                      <span class={`item-state item-state--${item.status}`}>{item.status}</span>
+                      {#if item.note}<p>{item.note}</p>{/if}
+                      {#if item.skipReason}<p>Skipped: {item.skipReason}</p>{/if}
+                      {#if item.history.length > 0}<p>{item.history.map(formatHistory).join(' · ')}</p>{/if}
+                      {#if item.sourceEvidence.length > 0}
+                        <p>{item.sourceEvidence.map((evidence) => `${evidence.label}: ${evidence.value}`).join(' · ')}</p>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </article>
+          {/each}
+        </div>
+      {/if}
+    </section>
+  {/if}
+
   {#if deletedSessions.length > 0}
     <section class="restore-panel" aria-label="Deleted sessions">
       <h2>Deleted sessions</h2>
@@ -822,6 +935,7 @@
   .shortcut-preview,
   .interaction-settings,
   .manual-item,
+  .archive-panel,
   .checklist-tools,
   .checklist-row__summary,
   .row-actions {
@@ -843,6 +957,7 @@
   }
 
   .manual-item,
+  .archive-panel,
   .restore-panel {
     margin-top: 1rem;
     padding: 0.75rem;
@@ -852,14 +967,23 @@
   .interaction-settings h3,
   .interaction-settings p,
   .manual-item h3,
+  .archive-panel h2,
+  .archive-panel h3,
+  .archive-panel p,
   .manual-item p {
     margin: 0;
+  }
+
+  .archive-guidance {
+    margin: 0;
+    color: #4f4a44;
   }
 
   .shortcut-preview button,
   .row-actions button,
   .interaction-settings input,
   .checklist-tools input,
+  .archive-panel input,
   .checklist-tools select,
   .edit-form input,
   .edit-form textarea,
@@ -882,7 +1006,29 @@
     margin: 1rem 0;
   }
 
+  .archive-panel {
+    display: grid;
+    gap: 0.75rem;
+    margin-bottom: 2rem;
+    background: #fffaf2;
+  }
+
+  .archive-results {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .archive-card {
+    border-top: 1px solid #d8d8d8;
+    padding-top: 0.75rem;
+  }
+
+  .archive-card ul {
+    margin-bottom: 0;
+  }
+
   .checklist-tools label,
+  .archive-panel label,
   .interaction-settings label,
   .edit-form label,
   .manual-form label,

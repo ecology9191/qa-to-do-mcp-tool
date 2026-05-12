@@ -12,6 +12,7 @@ export interface ActiveQaSession {
   readonly parentIssueTitle: string;
   readonly tracker: 'beads';
   readonly generatedAt: string;
+  readonly archivedAt?: string;
   readonly warnings: readonly string[];
   readonly sourceEvidence: readonly SourceEvidence[];
   readonly items: readonly ActiveQaItem[];
@@ -38,9 +39,18 @@ export interface ActiveQaItem {
   readonly history: readonly QaItemHistoryEvent[];
 }
 
-export type QaItemStatus = 'pending' | 'passed' | 'failed' | 'skipped';
+export type QaItemStatus = 'pending' | 'passed' | 'failed' | 'failed-filed' | 'skipped';
 
-type QaItemHistoryAction = 'manual-added' | 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited' | 'soft-deleted' | 'restored';
+type QaItemHistoryAction =
+  | 'manual-added'
+  | 'passed'
+  | 'unpassed'
+  | 'failed'
+  | 'failed-filed'
+  | 'skipped'
+  | 'edited'
+  | 'soft-deleted'
+  | 'restored';
 
 export interface QaItemHistoryEvent {
   readonly action: QaItemHistoryAction;
@@ -303,6 +313,25 @@ export class QaStorageRepository {
     });
   }
 
+  markFailureFiled(sessionId: string, itemId: string, trackerIssueId: string, createdAt = new Date().toISOString()): void {
+    const issueId = trackerIssueId.trim();
+    if (issueId.length === 0) {
+      throw new Error('Filed failure issue id is required.');
+    }
+
+    const item = this.#ensureItemExists(sessionId, itemId);
+    if (item.status !== 'failed') {
+      throw new Error('Only failed QA items can be marked failed-filed.');
+    }
+
+    this.#runInTransaction(() => {
+      this.#database
+        .prepare(`UPDATE qa_items SET status = ?, note = COALESCE(note, ?) WHERE session_id = ? AND id = ?`)
+        .run('failed-filed', `Filed as ${issueId}`, sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, 'failed-filed', issueId, createdAt);
+    });
+  }
+
   editItem(sessionId: string, itemId: string, edit: QaItemEdit, createdAt = new Date().toISOString()): void {
     const title = edit.title.trim();
     const steps = edit.steps.map((step) => step.trim());
@@ -406,6 +435,29 @@ export class QaStorageRepository {
     this.#database.prepare(`UPDATE qa_sessions SET deleted_at = NULL WHERE id = ?`).run(sessionId);
   }
 
+  archiveSession(sessionId: string, archivedAt = new Date().toISOString()): void {
+    this.#ensureSessionExists(sessionId);
+    if (!this.#isArchiveEligible(sessionId)) {
+      throw new Error('QA sessions can only be archived after every item is passed, failed-filed, or skipped with a reason.');
+    }
+
+    this.#database.prepare(`UPDATE qa_sessions SET archived_at = ? WHERE id = ?`).run(archivedAt, sessionId);
+  }
+
+  searchArchivedSessions(query = ''): ActiveQaSession[] {
+    const rows = this.#database
+      .prepare(`SELECT * FROM qa_sessions WHERE archived_at IS NOT NULL AND deleted_at IS NULL ORDER BY archived_at DESC, imported_at DESC`)
+      .all() as unknown as SessionRow[];
+    const normalizedQuery = query.trim().toLowerCase();
+    const sessions = rows.map((session) => this.#toActiveSession(session));
+
+    if (normalizedQuery.length === 0) {
+      return sessions;
+    }
+
+    return sessions.filter((session) => archivedSessionMatches(session, normalizedQuery));
+  }
+
   #runInTransaction(action: () => void): void {
     this.#database.exec('BEGIN');
     try {
@@ -428,6 +480,10 @@ export class QaStorageRepository {
       return undefined;
     }
 
+    return this.#toActiveSession(session);
+  }
+
+  #toActiveSession(session: SessionRow): ActiveQaSession {
     const itemRows = this.#database
       .prepare(`SELECT * FROM qa_items WHERE session_id = ? AND deleted_at IS NULL ORDER BY rowid ASC`)
       .all(session.id) as unknown as ItemRow[];
@@ -441,12 +497,21 @@ export class QaStorageRepository {
       parentIssueTitle: session.parent_issue_title,
       tracker: 'beads',
       generatedAt: session.generated_at,
+      ...(session.archived_at ? { archivedAt: session.archived_at } : {}),
       warnings: parseJson<string[]>(session.warnings_json),
       sourceEvidence: parseJson<SourceEvidence[]>(session.source_evidence_json),
       items: itemRows.map((item) =>
         toActiveItem(item, this.#getItemHistory(session.id, item.id), this.#getItemScreenshots(session.id, item.id))
       )
     };
+  }
+
+  #isArchiveEligible(sessionId: string): boolean {
+    const items = this.#database
+      .prepare(`SELECT status, skip_reason FROM qa_items WHERE session_id = ? AND deleted_at IS NULL`)
+      .all(sessionId) as unknown as Array<{ readonly status: string; readonly skip_reason: string | null }>;
+
+    return items.length > 0 && items.every(isTerminalForArchive);
   }
 
   #ensureItemExists(sessionId: string, itemId: string): { readonly status: QaItemStatus } {
@@ -541,7 +606,7 @@ function toActiveItem(
 }
 
 function toQaItemStatus(value: string): QaItemStatus {
-  if (value === 'passed' || value === 'failed' || value === 'skipped') {
+  if (value === 'passed' || value === 'failed' || value === 'failed-filed' || value === 'skipped') {
     return value;
   }
   return 'pending';
@@ -553,6 +618,7 @@ function toHistoryAction(value: string): QaItemHistoryAction {
     case 'passed':
     case 'unpassed':
     case 'failed':
+    case 'failed-filed':
     case 'skipped':
     case 'edited':
     case 'soft-deleted':
@@ -561,6 +627,43 @@ function toHistoryAction(value: string): QaItemHistoryAction {
     default:
       throw new Error(`Unknown QA item history action: ${value}`);
   }
+}
+
+function isTerminalForArchive(item: { readonly status: string; readonly skip_reason: string | null }): boolean {
+  return (
+    item.status === 'passed' ||
+    item.status === 'failed-filed' ||
+    (item.status === 'skipped' && typeof item.skip_reason === 'string' && item.skip_reason.trim().length > 0)
+  );
+}
+
+function archivedSessionMatches(session: ActiveQaSession, query: string): boolean {
+  const searchable = [
+    session.title,
+    session.repoName,
+    session.repoPath,
+    session.parentIssueId,
+    session.parentIssueTitle,
+    ...session.warnings,
+    ...session.sourceEvidence.map((evidence) => `${evidence.label} ${evidence.value}`),
+    ...session.items.flatMap((item) => [
+      item.title,
+      item.originalTitle,
+      item.expectedResult,
+      item.originalExpectedResult,
+      item.sourceIssueId,
+      item.note ?? '',
+      item.skipReason ?? '',
+      ...item.steps,
+      ...item.originalSteps,
+      ...item.warnings,
+      ...item.sourceEvidence.map((evidence) => `${evidence.label} ${evidence.value}`),
+      ...item.history.map((event) => `${event.action} ${event.detail ?? ''}`),
+      ...item.screenshots.map((screenshot) => `${screenshot.originalName} ${screenshot.localReference}`)
+    ])
+  ];
+
+  return searchable.join(' ').toLowerCase().includes(query);
 }
 
 function createSessionId(payload: QaSessionPayload): string {
@@ -626,6 +729,7 @@ interface SessionRow {
   readonly parent_issue_id: string;
   readonly parent_issue_title: string;
   readonly generated_at: string;
+  readonly archived_at: string | null;
   readonly warnings_json: string;
   readonly source_evidence_json: string;
 }

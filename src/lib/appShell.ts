@@ -16,17 +16,19 @@ export interface QaSessionSummary {
   tracker: 'beads';
   warnings: string[];
   itemCount: number;
+  archivedAt?: string;
   deletedAt?: string;
   items?: QaChecklistItem[];
 }
 
-export type QaChecklistStatus = 'pending' | 'passed' | 'failed' | 'skipped';
+export type QaChecklistStatus = 'pending' | 'passed' | 'failed' | 'failed-filed' | 'skipped';
 
 export type QaChecklistHistoryAction =
   | 'manual-added'
   | 'passed'
   | 'unpassed'
   | 'failed'
+  | 'failed-filed'
   | 'skipped'
   | 'edited'
   | 'soft-deleted'

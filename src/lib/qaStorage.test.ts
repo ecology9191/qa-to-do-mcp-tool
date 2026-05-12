@@ -134,6 +134,41 @@ describe('QA checklist storage', () => {
       'restored'
     ]);
   });
+
+  it('archives only fully resolved sessions while preserving searchable evidence', () => {
+    const repository = new QaStorageRepository();
+    const payload = createBeadsQaSessionFromParent('parent-1', issues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+    const generatedItemId = payload.items[0].id;
+    const manualItemId = repository.addManualItem(sessionId, {
+      title: 'Verify archive search keeps reviewer evidence',
+      steps: ['Open archived sessions', 'Search for the reviewer note'],
+      expectedResult: 'The archived QA item remains visible.',
+      note: 'archive-search-note'
+    }, '2026-05-12T09:06:00.000Z');
+
+    repository.failItem(sessionId, generatedItemId, '2026-05-12T09:07:00.000Z');
+    repository.skipItem(sessionId, manualItemId, 'Not applicable to this repo', '2026-05-12T09:08:00.000Z');
+
+    expect(() => repository.archiveSession(sessionId, '2026-05-12T09:09:00.000Z')).toThrow(
+      'QA sessions can only be archived after every item is passed, failed-filed, or skipped with a reason.'
+    );
+
+    repository.markFailureFiled(sessionId, generatedItemId, 'bug-1', '2026-05-12T09:10:00.000Z');
+    repository.archiveSession(sessionId, '2026-05-12T09:11:00.000Z');
+
+    expect(repository.getMostRecentActiveSession()).toBeUndefined();
+    const archivedSessions = repository.searchArchivedSessions('archive-search-note');
+    repository.close();
+
+    expect(archivedSessions).toHaveLength(1);
+    expect(archivedSessions[0]).toMatchObject({ id: sessionId, archivedAt: '2026-05-12T09:11:00.000Z' });
+    expect(archivedSessions[0]?.items.map((item) => item.status)).toEqual(['failed-filed', 'skipped']);
+    expect(archivedSessions[0]?.items[0].history.map((event) => event.action)).toContain('failed-filed');
+  });
 });
 
 const issues: BeadsIssue[] = [

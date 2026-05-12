@@ -176,11 +176,32 @@ describe('App shell', () => {
     expect(screen.getByText('Restored')).toBeInTheDocument();
 
     await fireEvent.click(screen.getByRole('button', { name: /delete session sample-repo parent-1 QA/i }));
-    expect(screen.queryByRole('heading', { name: 'sample-repo parent-1 QA' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 2, name: 'sample-repo parent-1 QA' })).not.toBeInTheDocument();
     expect(screen.getByText('Deleted sessions')).toBeInTheDocument();
 
     await fireEvent.click(screen.getByRole('button', { name: /restore session sample-repo parent-1 QA/i }));
     expect(screen.getByRole('heading', { name: 'sample-repo parent-1 QA' })).toBeInTheDocument();
+  });
+
+  it('archives only manually completed sessions and keeps archived evidence searchable', async () => {
+    render(App, { props: { initialState: createChecklistState() } });
+
+    expect(screen.getByRole('button', { name: /Archive session sample-repo parent-1 QA/i })).toBeDisabled();
+  });
+
+  it('moves archive-ready sessions to searchable archived results without tracker mutation', async () => {
+    render(App, { props: { initialState: createArchiveReadyState() } });
+
+    await fireEvent.click(screen.getByRole('button', { name: /Archive session sample-repo parent-1 QA/i }));
+
+    expect(screen.queryByRole('heading', { level: 2, name: 'sample-repo parent-1 QA' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Archived sessions' })).toBeInTheDocument();
+    expect(screen.getByText(/App-only archive/i)).toBeInTheDocument();
+
+    await fireEvent.input(screen.getByLabelText('Search archived sessions'), { target: { value: 'Filed bug-1' } });
+
+    expect(screen.getByText('Verify audit export')).toBeInTheDocument();
+    expect(screen.getByText(/Filed bug-1/i)).toBeInTheDocument();
   });
 
   it('plays a generated pass chime with locally persisted mute and volume controls', async () => {
@@ -252,6 +273,19 @@ function installAudioContextStub() {
   vi.stubGlobal('webkitAudioContext', FakeAudioContext);
 
   return { oscillatorStart, gainSetValueAtTime };
+}
+
+function createArchiveReadyState() {
+  const state = createChecklistState();
+  const session = state.sessions[0];
+  if (!session.items) return state;
+
+  session.items[0].status = 'passed';
+  session.items[0].history = [{ action: 'passed', createdAt: '2026-05-12T09:01:00.000Z' }];
+  session.items[1].status = 'failed-filed';
+  session.items[1].note = 'Filed bug-1 after confirming the Beads draft.';
+  session.items[1].history = [{ action: 'failed-filed', detail: 'bug-1', createdAt: '2026-05-12T09:02:00.000Z' }];
+  return state;
 }
 
 function createChecklistState() {
