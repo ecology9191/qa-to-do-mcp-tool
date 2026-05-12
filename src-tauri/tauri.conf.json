@@ -27,6 +27,17 @@
     "active": true,
     "targets": ["deb", "appimage"],
     "category": "DeveloperTool",
-    "shortDescription": "Local-first QA checklist for Sandcastle/RALPH output"
+    "shortDescription": "Local-first QA checklist for Sandcastle/RALPH output",
+    "longDescription": "QA To Do is a local-first Linux desktop checklist for human QA of completed Sandcastle/RALPH work. It imports validated MCP inbox sessions and keeps QA evidence local.",
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      },
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"],
+        "section": "devel",
+        "priority": "optional"
+      }
+    }
   }
 }

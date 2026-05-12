@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 
 export type ProviderSetupStatus = 'ready' | 'manual';
 export type ProviderSetupOperationAction = 'create' | 'update' | 'noop';
+export type ProviderSetupCapabilityStatus = 'automated' | 'manual';
 
 export interface ProviderSetupOptions {
   readonly provider: string;
@@ -21,8 +22,15 @@ export interface ProviderSetupOperation {
 export interface ProviderSetupPlan {
   readonly provider: string;
   readonly status: ProviderSetupStatus;
+  readonly capabilities: readonly ProviderSetupCapability[];
   readonly operations: readonly ProviderSetupOperation[];
   readonly manualInstructions: readonly string[];
+}
+
+export interface ProviderSetupCapability {
+  readonly name: string;
+  readonly status: ProviderSetupCapabilityStatus;
+  readonly detail: string;
 }
 
 export interface ProviderSetupApplyResult {
@@ -40,6 +48,34 @@ export class ProviderSetupApplyError extends Error {
 const openCodeSchema = 'https://opencode.ai/config.json';
 const mcpServerName = 'qa-to-do';
 
+const openCodeCapabilities: readonly ProviderSetupCapability[] = [
+  { name: 'global /to-qa command', status: 'automated', detail: 'Previewed as an OpenCode command file.' },
+  { name: 'to-qa skill', status: 'automated', detail: 'Previewed as an OpenCode global skill.' },
+  {
+    name: 'qa-to-do MCP registration',
+    status: 'automated',
+    detail: 'Safely merged into object-shaped OpenCode config.'
+  }
+];
+
+const manualProviderCapabilities: readonly ProviderSetupCapability[] = [
+  {
+    name: 'global /to-qa command',
+    status: 'manual',
+    detail: 'Provider command or rule location is not safely editable by this installer.'
+  },
+  {
+    name: 'to-qa skill',
+    status: 'manual',
+    detail: 'Provider skill support must be installed manually or replaced with provider-native rules.'
+  },
+  {
+    name: 'qa-to-do MCP registration',
+    status: 'manual',
+    detail: 'Provider config shape is not safely editable by this installer.'
+  }
+];
+
 type OpenCodeConfigOperationResult =
   | { readonly status: 'ready'; readonly operation: ProviderSetupOperation }
   | { readonly status: 'manual'; readonly manualInstructions: readonly string[] };
@@ -49,6 +85,7 @@ export async function createProviderSetupPlan(options: ProviderSetupOptions): Pr
     return {
       provider: options.provider,
       status: 'manual',
+      capabilities: manualProviderCapabilities,
       operations: [],
       manualInstructions: [
         `${options.provider} setup is not safely editable by this installer yet.`,
@@ -59,6 +96,38 @@ export async function createProviderSetupPlan(options: ProviderSetupOptions): Pr
   }
 
   return createOpenCodeSetupPlan(options);
+}
+
+export function renderProviderSetupDryRun(plan: ProviderSetupPlan): string {
+  const lines = [`Dry run for ${plan.provider} provider setup`, '', 'Capabilities:'];
+
+  for (const capability of plan.capabilities) {
+    lines.push(`- ${capability.name}: ${capability.status} - ${capability.detail}`);
+  }
+
+  if (plan.operations.length > 0) {
+    lines.push('', 'Operations:');
+    for (const operation of plan.operations) {
+      lines.push(`- ${operation.action} ${operation.path}`);
+      if (operation.before !== undefined) {
+        lines.push('  Before:');
+        lines.push(indent(operation.before.trimEnd()));
+      }
+      lines.push('  After:');
+      lines.push(indent(operation.after.trimEnd()));
+    }
+  } else {
+    lines.push('', 'No files will be changed automatically. Follow these manual steps instead.');
+  }
+
+  if (plan.manualInstructions.length > 0) {
+    lines.push('', 'Instructions:');
+    for (const instruction of plan.manualInstructions) {
+      lines.push(`- ${instruction}`);
+    }
+  }
+
+  return `${lines.join('\n')}\n`;
 }
 
 export async function applyProviderSetupPlan(plan: ProviderSetupPlan): Promise<ProviderSetupApplyResult> {
@@ -96,6 +165,7 @@ async function createOpenCodeSetupPlan(options: ProviderSetupOptions): Promise<P
     return {
       provider: options.provider,
       status: 'manual',
+      capabilities: manualProviderCapabilities,
       operations: [],
       manualInstructions: configOperation.manualInstructions
     };
@@ -111,6 +181,7 @@ async function createOpenCodeSetupPlan(options: ProviderSetupOptions): Promise<P
   return {
     provider: options.provider,
     status: 'ready',
+    capabilities: openCodeCapabilities,
     operations,
     manualInstructions: [
       'Preview every operation before applying; these file contents are the exact OpenCode setup changes.',
@@ -256,6 +327,13 @@ No app-managed secrets are stored by this setup. Rely on user environment, repo 
 
 function stringifyConfig(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function indent(value: string): string {
+  return value
+    .split('\n')
+    .map((line) => `  ${line}`)
+    .join('\n');
 }
 
 function sameJson(left: unknown, right: unknown): boolean {

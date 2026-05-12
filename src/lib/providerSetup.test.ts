@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { applyProviderSetupPlan, createProviderSetupPlan } from './providerSetup';
+import { applyProviderSetupPlan, createProviderSetupPlan, renderProviderSetupDryRun } from './providerSetup';
 
 describe('provider setup', () => {
   const temporaryDirectories: string[] = [];
@@ -88,6 +88,42 @@ describe('provider setup', () => {
     expect(plan.manualInstructions.join('\n')).toContain('cursor setup is not safely editable');
     expect(result.appliedPaths).toEqual([]);
     await expect(stat(join(root, 'opencode.json'))).rejects.toThrow();
+  });
+
+  it('reports provider capabilities and renders dry-run output with safe fallback instructions', async () => {
+    const openCodeRoot = await createTemporaryDirectory();
+    const unsupportedRoot = await createTemporaryDirectory();
+
+    const openCodePlan = await createProviderSetupPlan({
+      provider: 'opencode',
+      configDir: openCodeRoot,
+      mcpCommand: ['qa-to-do', 'mcp']
+    });
+    const unsupportedPlan = await createProviderSetupPlan({
+      provider: 'zed',
+      configDir: unsupportedRoot,
+      mcpCommand: ['qa-to-do', 'mcp']
+    });
+
+    expect(openCodePlan.capabilities).toEqual([
+      { name: 'global /to-qa command', status: 'automated', detail: 'Previewed as an OpenCode command file.' },
+      { name: 'to-qa skill', status: 'automated', detail: 'Previewed as an OpenCode global skill.' },
+      { name: 'qa-to-do MCP registration', status: 'automated', detail: 'Safely merged into object-shaped OpenCode config.' }
+    ]);
+    expect(unsupportedPlan.capabilities).toContainEqual({
+      name: 'qa-to-do MCP registration',
+      status: 'manual',
+      detail: 'Provider config shape is not safely editable by this installer.'
+    });
+
+    const openCodeDryRun = renderProviderSetupDryRun(openCodePlan);
+    const unsupportedDryRun = renderProviderSetupDryRun(unsupportedPlan);
+
+    expect(openCodeDryRun).toContain('Dry run for opencode provider setup');
+    expect(openCodeDryRun).toContain('create ' + join(openCodeRoot, 'commands', 'to-qa.md'));
+    expect(openCodeDryRun).toContain('qa-to-do MCP registration: automated');
+    expect(unsupportedDryRun).toContain('zed setup is not safely editable');
+    expect(unsupportedDryRun).toContain('No files will be changed automatically. Follow these manual steps instead.');
   });
 
   it('falls back to manual instructions for unknown or conflicting OpenCode config shapes', async () => {
