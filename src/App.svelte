@@ -3,6 +3,7 @@
     createInitialShellState,
     emptyStateCommand,
     type AppShellState,
+    type FailureScreenshot,
     type HealthState,
     type QaChecklistHistoryAction,
     type QaChecklistHistoryEvent,
@@ -32,6 +33,9 @@
   let editExpectedResult = $state('');
   let editNote = $state('');
   let skipReason = $state('');
+  let failureComposerItemId: string | undefined = $state();
+  let failureActualBehavior = $state('');
+  let failureScreenshots: FailureScreenshot[] = $state([]);
   const healthLabels: Record<HealthState, string> = {
     ready: 'Ready',
     'needs-setup': 'Needs setup',
@@ -88,7 +92,43 @@
   function failItem(item: QaChecklistItem): void {
     item.status = 'failed';
     item.skipReason = undefined;
+    failureComposerItemId = item.id;
+    failureActualBehavior = item.failureEvidence?.actualBehavior ?? '';
+    failureScreenshots = [...(item.failureEvidence?.screenshots ?? [])];
+    expandedItemId = item.id;
     recordHistory(item, 'failed');
+  }
+
+  function attachScreenshotFiles(files: FileList | null): void {
+    if (!files) return;
+    const screenshots = Array.from(files)
+      .filter((file) => file.type.startsWith('image/'))
+      .map((file) => ({
+        name: file.name,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        localReference: `pending-local-copy:${file.name}`
+      }));
+    failureScreenshots = [...failureScreenshots, ...screenshots];
+  }
+
+  function handleFailurePaste(event: ClipboardEvent): void {
+    if (failureComposerItemId === undefined) return;
+    attachScreenshotFiles(event.clipboardData?.files ?? null);
+  }
+
+  function saveFailureEvidence(item: QaChecklistItem): void {
+    const actualBehavior = failureActualBehavior.trim();
+    if (actualBehavior.length === 0 || item.status !== 'failed') return;
+    item.failureEvidence = {
+      actualBehavior,
+      screenshots: failureScreenshots
+    };
+    item.note = actualBehavior;
+    recordHistory(item, 'failed', actualBehavior);
+    failureComposerItemId = undefined;
+    failureActualBehavior = '';
+    failureScreenshots = [];
   }
 
   function startSkip(item: QaChecklistItem): void {
@@ -366,6 +406,15 @@
                       <h3>Notes</h3>
                       <p>{item.note ?? 'No reviewer notes yet.'}</p>
                     </section>
+                    {#if item.failureEvidence}
+                      <section class="failure-evidence-summary">
+                        <h3>Failure evidence</h3>
+                        <p>Failed: {item.failureEvidence.actualBehavior}</p>
+                        {#if item.failureEvidence.screenshots.length > 0}
+                          <p>Screenshots: {item.failureEvidence.screenshots.map((screenshot) => screenshot.name).join(', ')}</p>
+                        {/if}
+                      </section>
+                    {/if}
                     {#if item.title !== item.originalTitle || item.expectedResult !== item.originalExpectedResult || item.steps.join('\n') !== item.originalSteps.join('\n')}
                       <section class="original-text">
                         <h3>Original generated text</h3>
@@ -373,6 +422,55 @@
                         <p>{item.originalExpectedResult}</p>
                       </section>
                     {/if}
+                  {/if}
+
+                  {#if failureComposerItemId === item.id && item.status === 'failed'}
+                    <section class="failure-composer" aria-label={`Failure evidence for ${item.title}`} onpaste={handleFailurePaste}>
+                      <h3>Failure evidence for {item.title}</h3>
+                      <section>
+                        <h3>QA instruction</h3>
+                        <ol>
+                          {#each item.steps as step}
+                            <li>{step}</li>
+                          {/each}
+                        </ol>
+                      </section>
+                      <section>
+                        <h3>Expected result</h3>
+                        <p>{item.expectedResult}</p>
+                      </section>
+                      <section>
+                        <h3>Source evidence</h3>
+                        {#each item.sourceEvidence as evidence}
+                          <p><strong>{evidence.label}</strong>: {evidence.value}</p>
+                        {/each}
+                      </section>
+                      <label>
+                        Actual behavior
+                        <textarea bind:value={failureActualBehavior} aria-label="Actual behavior" required></textarea>
+                      </label>
+                      <label>
+                        Attach screenshot files
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          aria-label="Attach screenshot files"
+                          onchange={(event) => attachScreenshotFiles(event.currentTarget.files)}
+                        />
+                      </label>
+                      <p class="paste-hint">Paste images while this composer is focused to attach clipboard screenshots.</p>
+                      {#if failureScreenshots.length > 0}
+                        <ul aria-label="Attached screenshots">
+                          {#each failureScreenshots as screenshot}
+                            <li>{screenshot.name}</li>
+                          {/each}
+                        </ul>
+                      {/if}
+                      <button type="button" disabled={failureActualBehavior.trim().length === 0} onclick={() => saveFailureEvidence(item)}>
+                        Save failure evidence
+                      </button>
+                    </section>
                   {/if}
 
                   {#if skipItemId === item.id}
@@ -446,7 +544,9 @@
   .checklist-tools select,
   .edit-form input,
   .edit-form textarea,
-  .skip-form input {
+  .skip-form input,
+  .failure-composer textarea,
+  .failure-composer input {
     border: 1px solid #1f1f1f;
     background: #fff;
     color: #111;
@@ -463,7 +563,8 @@
 
   .checklist-tools label,
   .edit-form label,
-  .skip-form label {
+  .skip-form label,
+  .failure-composer label {
     display: grid;
     gap: 0.25rem;
     font-size: 0.8rem;
@@ -526,13 +627,31 @@
   }
 
   .edit-form,
-  .skip-form {
+  .skip-form,
+  .failure-composer {
     display: grid;
     gap: 0.6rem;
     max-width: 42rem;
   }
 
-  .edit-form textarea {
+  .edit-form textarea,
+  .failure-composer textarea {
     min-height: 4rem;
+  }
+
+  .failure-composer {
+    border: 1px solid #111;
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .failure-evidence-summary {
+    border-left: 3px solid #b00020;
+    padding-left: 0.75rem;
+  }
+
+  .paste-hint {
+    margin: 0;
+    font-size: 0.85rem;
   }
 </style>

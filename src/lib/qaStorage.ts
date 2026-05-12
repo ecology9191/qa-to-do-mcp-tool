@@ -1,4 +1,6 @@
+import { copyFileSync, mkdirSync, statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { basename, join } from 'node:path';
 import type { QaSessionPayload, SourceEvidence } from './qaSession';
 
 export interface ActiveQaSession {
@@ -31,6 +33,7 @@ export interface ActiveQaItem {
   readonly status: QaItemStatus;
   readonly skipReason?: string;
   readonly note?: string;
+  readonly screenshots: readonly FailureScreenshot[];
   readonly history: readonly QaItemHistoryEvent[];
 }
 
@@ -51,11 +54,29 @@ export interface QaItemEdit {
   readonly note?: string;
 }
 
+export interface FailureScreenshotInput {
+  readonly sourcePath: string;
+  readonly originalName?: string;
+  readonly mimeType: string;
+}
+
+export interface FailureScreenshot {
+  readonly id: string;
+  readonly originalName: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly localPath: string;
+  readonly localReference: string;
+  readonly capturedAt: string;
+}
+
 export class QaStorageRepository {
   readonly #database: DatabaseSync;
+  readonly #storageRoot: string;
 
-  constructor(databasePath = ':memory:') {
+  constructor(databasePath = ':memory:', storageRoot = '.qa-to-do') {
     this.#database = new DatabaseSync(databasePath);
+    this.#storageRoot = storageRoot;
     this.#database.exec('PRAGMA foreign_keys = ON');
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS qa_sessions (
@@ -101,6 +122,18 @@ export class QaStorageRepository {
         action TEXT NOT NULL,
         detail TEXT,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS qa_item_screenshots (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL REFERENCES qa_sessions(id) ON DELETE CASCADE,
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        local_path TEXT NOT NULL,
+        local_reference TEXT NOT NULL,
+        captured_at TEXT NOT NULL
       );
     `);
   }
@@ -223,6 +256,51 @@ export class QaStorageRepository {
     });
   }
 
+  attachFailureScreenshot(
+    sessionId: string,
+    itemId: string,
+    screenshot: FailureScreenshotInput,
+    capturedAt = new Date().toISOString()
+  ): FailureScreenshot {
+    const item = this.#ensureItemExists(sessionId, itemId);
+    if (item.status !== 'failed') {
+      throw new Error('Screenshots can only be attached to failed QA items.');
+    }
+    if (!screenshot.mimeType.startsWith('image/')) {
+      throw new Error('Failure screenshots must be image files.');
+    }
+
+    const originalName = screenshot.originalName?.trim() || basename(screenshot.sourcePath);
+    const screenshotId = `screenshot-${Buffer.from(`${sessionId}:${itemId}:${capturedAt}:${originalName}`).toString('base64url').slice(0, 32)}`;
+    const relativeDirectory = join('screenshots', sanitizePathSegment(sessionId), sanitizePathSegment(itemId));
+    const targetDirectory = join(this.#storageRoot, relativeDirectory);
+    const targetName = `${sanitizePathSegment(capturedAt)}-${sanitizePathSegment(originalName)}`;
+    const localPath = join(targetDirectory, targetName);
+    const localReference = `app-storage://${join(relativeDirectory, targetName)}`;
+
+    mkdirSync(targetDirectory, { recursive: true });
+    copyFileSync(screenshot.sourcePath, localPath);
+    const sizeBytes = statSync(localPath).size;
+
+    this.#database
+      .prepare(`
+        INSERT INTO qa_item_screenshots (
+          id, item_id, session_id, original_name, mime_type, size_bytes, local_path, local_reference, captured_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(screenshotId, itemId, sessionId, originalName, screenshot.mimeType, sizeBytes, localPath, localReference, capturedAt);
+
+    return {
+      id: screenshotId,
+      originalName,
+      mimeType: screenshot.mimeType,
+      sizeBytes,
+      localPath,
+      localReference,
+      capturedAt
+    };
+  }
+
   #runInTransaction(action: () => void): void {
     this.#database.exec('BEGIN');
     try {
@@ -260,7 +338,7 @@ export class QaStorageRepository {
       generatedAt: session.generated_at,
       warnings: parseJson<string[]>(session.warnings_json),
       sourceEvidence: parseJson<SourceEvidence[]>(session.source_evidence_json),
-      items: itemRows.map((item) => toActiveItem(item, this.#getItemHistory(session.id, item.id)))
+      items: itemRows.map((item) => toActiveItem(item, this.#getItemHistory(session.id, item.id), this.#getItemScreenshots(session.id, item.id)))
     };
   }
 
@@ -300,12 +378,32 @@ export class QaStorageRepository {
     }));
   }
 
+  #getItemScreenshots(sessionId: string, itemId: string): FailureScreenshot[] {
+    const rows = this.#database
+      .prepare(`SELECT * FROM qa_item_screenshots WHERE session_id = ? AND item_id = ? ORDER BY captured_at ASC`)
+      .all(sessionId, itemId) as unknown as ScreenshotRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      originalName: row.original_name,
+      mimeType: row.mime_type,
+      sizeBytes: row.size_bytes,
+      localPath: row.local_path,
+      localReference: row.local_reference,
+      capturedAt: row.captured_at
+    }));
+  }
+
   close(): void {
     this.#database.close();
   }
 }
 
-function toActiveItem(item: ItemRow, history: readonly QaItemHistoryEvent[]): ActiveQaItem {
+function toActiveItem(
+  item: ItemRow,
+  history: readonly QaItemHistoryEvent[],
+  screenshots: readonly FailureScreenshot[]
+): ActiveQaItem {
   return {
     id: item.id,
     title: item.title,
@@ -322,6 +420,7 @@ function toActiveItem(item: ItemRow, history: readonly QaItemHistoryEvent[]): Ac
     status: toQaItemStatus(item.status),
     ...(item.skip_reason ? { skipReason: item.skip_reason } : {}),
     ...(item.note ? { note: item.note } : {}),
+    screenshots,
     history
   };
 }
@@ -353,6 +452,11 @@ function createSessionId(payload: QaSessionPayload): string {
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
+}
+
+function sanitizePathSegment(value: string): string {
+  const normalized = value.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-');
+  return normalized.length > 0 ? normalized : 'unnamed';
 }
 
 interface SessionRow {
@@ -389,4 +493,14 @@ interface HistoryRow {
   readonly action: string;
   readonly detail: string | null;
   readonly created_at: string;
+}
+
+interface ScreenshotRow {
+  readonly id: string;
+  readonly original_name: string;
+  readonly mime_type: string;
+  readonly size_bytes: number;
+  readonly local_path: string;
+  readonly local_reference: string;
+  readonly captured_at: string;
 }

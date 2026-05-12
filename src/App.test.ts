@@ -57,7 +57,7 @@ describe('App shell', () => {
     await fireEvent.keyDown(window, { key: 'Enter' });
 
     expect(screen.getByText('Steps')).toBeInTheDocument();
-    expect(screen.getByText('Open the app')).toBeInTheDocument();
+    expect(screen.getAllByText('Open the app').length).toBeGreaterThan(0);
     expect(screen.getByText('Expected result')).toBeInTheDocument();
     expect(screen.getByText('Evidence')).toBeInTheDocument();
 
@@ -97,6 +97,35 @@ describe('App shell', () => {
     expect(screen.getByText('skipped')).toBeInTheDocument();
     await fireEvent.click(screen.getByRole('button', { name: /history Verify login redirect/i }));
     expect(screen.getByText(/Skipped: Covered by release smoke test/i)).toBeInTheDocument();
+  });
+
+  it('opens a scoped failure composer with required actual behavior and screenshot attachments', async () => {
+    render(App, { props: { initialState: createChecklistState() } });
+
+    await fireEvent.click(screen.getByRole('button', { name: /fail Verify login redirect/i }));
+
+    expect(screen.getByRole('heading', { name: /Failure evidence for Verify login redirect/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'QA instruction' })).toBeInTheDocument();
+    expect(screen.getAllByText('Open the app').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('The dashboard opens after login.').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Acceptance criteria/i).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('Actual behavior')).toBeRequired();
+    expect(screen.getByRole('button', { name: 'Save failure evidence' })).toBeDisabled();
+
+    await fireEvent.input(screen.getByLabelText('Actual behavior'), {
+      target: { value: 'The login flow stays on the callback screen.' }
+    });
+    await fireEvent.change(screen.getByLabelText('Attach screenshot files'), {
+      target: { files: [new File(['image-bytes'], 'callback.png', { type: 'image/png' })] }
+    });
+
+    expect(screen.getByRole('button', { name: 'Save failure evidence' })).toBeEnabled();
+    expect(screen.getByText('callback.png')).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Save failure evidence' }));
+
+    expect(screen.getByText(/Failed: The login flow stays on the callback screen./i)).toBeInTheDocument();
+    expect(screen.getByText(/Screenshots: callback.png/i)).toBeInTheDocument();
   });
 });
 

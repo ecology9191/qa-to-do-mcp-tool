@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createBeadsQaSessionFromParent, type BeadsIssue } from './beadsQa';
 import { QaStorageRepository } from './qaStorage';
@@ -35,6 +39,47 @@ describe('QA checklist storage', () => {
     });
     expect(activeSession?.items[0].sourceEvidence).toEqual(payload.items[0].sourceEvidence);
     expect(activeSession?.items[0].history.map((event) => event.action)).toEqual(['passed', 'unpassed', 'skipped', 'edited']);
+  });
+
+  it('copies failed item screenshots into app storage with local references', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'qa-evidence-'));
+    const sourceDir = join(storageRoot, 'source');
+    mkdirSync(sourceDir);
+    const sourcePath = join(sourceDir, 'failure.png');
+    writeFileSync(sourcePath, 'png-bytes');
+    const repository = new QaStorageRepository(':memory:', storageRoot);
+    const payload = createBeadsQaSessionFromParent('parent-1', issues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+    const itemId = payload.items[0].id;
+
+    expect(() => repository.attachFailureScreenshot(sessionId, itemId, {
+      sourcePath,
+      originalName: 'failure.png',
+      mimeType: 'image/png'
+    }, '2026-05-12T09:05:00.000Z')).toThrow('Screenshots can only be attached to failed QA items.');
+
+    repository.failItem(sessionId, itemId, '2026-05-12T09:04:00.000Z');
+    repository.attachFailureScreenshot(sessionId, itemId, {
+      sourcePath,
+      originalName: 'failure.png',
+      mimeType: 'image/png'
+    }, '2026-05-12T09:05:00.000Z');
+
+    const activeSession = repository.getMostRecentActiveSession();
+    repository.close();
+
+    expect(activeSession?.items[0].screenshots).toEqual([
+      expect.objectContaining({
+        originalName: 'failure.png',
+        mimeType: 'image/png',
+        sizeBytes: 9,
+        capturedAt: '2026-05-12T09:05:00.000Z'
+      })
+    ]);
+    expect(activeSession?.items[0].screenshots?.[0]?.localPath).toContain(join('screenshots', sessionId, itemId));
   });
 });
 
