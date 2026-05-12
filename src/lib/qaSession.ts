@@ -19,7 +19,7 @@ export interface QaSessionPayload {
   readonly title: string;
   readonly generatedAt: string;
   readonly source: {
-    readonly tracker: 'beads';
+    readonly tracker: 'beads' | 'scratch';
     readonly repo: {
       readonly name: string;
       readonly path: string;
@@ -72,8 +72,8 @@ export function validateQaSessionPayload(payload: unknown): QaSessionPayload {
   if (!isRecord(payload.source)) {
     issues.push('source is required');
   } else {
-    if (payload.source.tracker !== 'beads') {
-      issues.push('source.tracker must be beads');
+    if (payload.source.tracker !== 'beads' && payload.source.tracker !== 'scratch') {
+      issues.push('source.tracker must be beads or scratch');
     }
     validateRepo(payload.source.repo, issues);
     validateParentIssue(payload.source.parentIssue, issues);

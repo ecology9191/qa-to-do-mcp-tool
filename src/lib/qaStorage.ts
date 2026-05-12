@@ -3,6 +3,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { basename, join } from 'node:path';
 import type { QaSessionPayload, SourceEvidence } from './qaSession';
 
+export type QaTracker = 'beads' | 'scratch';
+
 export interface ActiveQaSession {
   readonly id: string;
   readonly title: string;
@@ -10,7 +12,7 @@ export interface ActiveQaSession {
   readonly repoPath: string;
   readonly parentIssueId: string;
   readonly parentIssueTitle: string;
-  readonly tracker: 'beads';
+  readonly tracker: QaTracker;
   readonly generatedAt: string;
   readonly archivedAt?: string;
   readonly warnings: readonly string[];
@@ -496,7 +498,7 @@ export class QaStorageRepository {
       repoPath: session.repo_path,
       parentIssueId: session.parent_issue_id,
       parentIssueTitle: session.parent_issue_title,
-      tracker: 'beads',
+      tracker: toQaTracker(session.tracker),
       generatedAt: session.generated_at,
       ...(session.archived_at ? { archivedAt: session.archived_at } : {}),
       warnings: parseJson<string[]>(session.warnings_json),
@@ -725,6 +727,7 @@ function sanitizePathSegment(value: string): string {
 interface SessionRow {
   readonly id: string;
   readonly title: string;
+  readonly tracker: string;
   readonly repo_name: string;
   readonly repo_path: string;
   readonly parent_issue_id: string;
@@ -738,6 +741,10 @@ interface SessionRow {
 interface ArchiveEligibilityItem {
   readonly status: string;
   readonly skip_reason: string | null;
+}
+
+function toQaTracker(value: string): QaTracker {
+  return value === 'scratch' ? 'scratch' : 'beads';
 }
 
 interface ItemRow {

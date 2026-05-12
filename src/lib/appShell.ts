@@ -13,7 +13,7 @@ export interface QaSessionSummary {
   repoName: string;
   parentIssueId: string;
   parentIssueTitle: string;
-  tracker: 'beads';
+  tracker: 'beads' | 'scratch';
   warnings: string[];
   itemCount: number;
   archivedAt?: string;

@@ -8,7 +8,7 @@ import { importQaSessionInboxEntries } from './inboxImporter';
 import { writeQaSessionInboxEntry } from './mcpInbox';
 import { QaStorageRepository } from './qaStorage';
 import { validateQaSessionPayload, QaSessionValidationError } from './qaSession';
-import { runToQaForBeadsParent } from './toQa';
+import { runToQaForBeadsParent, runToQaForScratchParent } from './toQa';
 
 describe('MCP inbox import', () => {
   const temporaryDirectories: string[] = [];
@@ -89,6 +89,47 @@ describe('MCP inbox import', () => {
     expect(result.activeSession.warnings).toContain('1 incomplete child issue(s) were excluded from QA: child-open (open)');
   });
 
+  it('runs the /to-qa structured .scratch parent flow through inbox import', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qa-to-do-'));
+    temporaryDirectories.push(root);
+    const repoPath = join(root, 'sample-repo');
+    const scratchDir = join(repoPath, '.scratch');
+    await mkdir(scratchDir, { recursive: true });
+    await writeFile(join(scratchDir, 'parent-1.md'), scratchIssue({ id: 'parent-1', title: 'Parent feature', status: 'open' }));
+    await writeFile(
+      join(scratchDir, 'child-closed.md'),
+      scratchIssue({
+        id: 'child-closed',
+        title: 'Import QA sessions',
+        status: 'closed',
+        parent: 'parent-1',
+        acceptanceNotes: ['The dashboard shows the imported QA session with repo context.']
+      })
+    );
+    const repository = new QaStorageRepository();
+
+    const result = await runToQaForScratchParent({
+      parentIssueId: 'parent-1',
+      repoPath,
+      repoName: 'sample-repo',
+      inboxDir: join(root, 'inbox'),
+      processedDir: join(root, 'processed'),
+      quarantineDir: join(root, 'quarantine'),
+      repository,
+      generatedAt: '2026-05-12T09:00:00.000Z',
+      correlationId: 'correlation-1'
+    });
+    repository.close();
+
+    expect(result.importResult.quarantinedEntries).toEqual([]);
+    expect(result.activeSession).toMatchObject({
+      title: 'sample-repo parent-1 QA',
+      tracker: 'scratch',
+      parentIssueId: 'parent-1'
+    });
+    expect(result.activeSession.items[0]).toMatchObject({ sourceIssueId: 'child-closed', confidence: 'normal' });
+  });
+
   it('rejects invalid MCP payloads before inbox write', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qa-to-do-'));
     temporaryDirectories.push(root);
@@ -138,3 +179,20 @@ const issues: BeadsIssue[] = [
     dependencies: [{ issue_id: 'child-open', depends_on_id: 'parent-1', type: 'parent-child' }]
   }
 ];
+
+interface ScratchIssueFixture {
+  readonly id: string;
+  readonly title: string;
+  readonly status: string;
+  readonly parent?: string;
+  readonly acceptanceNotes?: readonly string[];
+}
+
+function scratchIssue(issue: ScratchIssueFixture): string {
+  const parent = issue.parent ? `parent: ${issue.parent}\n` : '';
+  const acceptanceNotes = issue.acceptanceNotes?.length
+    ? `\n## Acceptance notes\n\n${issue.acceptanceNotes.map((note) => `- ${note}`).join('\n')}\n`
+    : '';
+
+  return `---\nid: ${issue.id}\ntitle: ${issue.title}\nstatus: ${issue.status}\n${parent}---\n\n## Summary\n\n${issue.title}\n${acceptanceNotes}`;
+}
