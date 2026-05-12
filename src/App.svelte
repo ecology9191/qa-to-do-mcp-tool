@@ -1,7 +1,12 @@
 <script lang="ts">
-  import { createInitialShellState, emptyStateCommand, type HealthState } from './lib/appShell';
+  import { createInitialShellState, emptyStateCommand, type AppShellState, type HealthState } from './lib/appShell';
 
-  const state = createInitialShellState();
+  interface AppProps {
+    readonly initialState?: AppShellState;
+  }
+
+  let { initialState = createInitialShellState() }: AppProps = $props();
+  const state = $derived(initialState);
   const healthLabels: Record<HealthState, string> = {
     ready: 'Ready',
     'needs-setup': 'Needs setup',
@@ -34,6 +39,30 @@
         <span>Primary workflow</span>
         <code>{emptyStateCommand}</code>
       </div>
+    </section>
+  {:else}
+    <section class="active-session" aria-labelledby="active-session-title">
+      <div>
+        <p class="section-kicker">Most recent active session</p>
+        <h2 id="active-session-title">{state.sessions[0].title}</h2>
+        <p>
+          Imported from <strong>{state.sessions[0].repoName}</strong> via {state.sessions[0].tracker}, parent
+          <code>{state.sessions[0].parentIssueId}</code>: {state.sessions[0].parentIssueTitle}.
+        </p>
+      </div>
+      <div class="active-session__meta" aria-label="Active session metadata">
+        <span>{state.sessions[0].itemCount} QA item{state.sessions[0].itemCount === 1 ? '' : 's'}</span>
+        {#if state.sessions[0].warnings.length > 0}
+          <span>{state.sessions[0].warnings.length} warning{state.sessions[0].warnings.length === 1 ? '' : 's'}</span>
+        {/if}
+      </div>
+      {#if state.sessions[0].warnings.length > 0}
+        <ul class="warning-list" aria-label="Session warnings">
+          {#each state.sessions[0].warnings as warning}
+            <li>{warning}</li>
+          {/each}
+        </ul>
+      {/if}
     </section>
   {/if}
 

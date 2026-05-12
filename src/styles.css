@@ -99,6 +99,46 @@ h3 {
   padding: clamp(1.25rem, 4vw, 2rem);
 }
 
+.active-session {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 2rem;
+  border: 1px solid #27231f;
+  border-radius: 1.25rem;
+  background: #fffaf2;
+  box-shadow: 0 1.25rem 4rem rgb(37 32 26 / 10%);
+  padding: clamp(1.25rem, 4vw, 2rem);
+}
+
+.active-session p {
+  max-width: 48rem;
+  color: #4f4a44;
+  line-height: 1.65;
+}
+
+.active-session__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.active-session__meta span {
+  border: 1px solid #d8d1c7;
+  border-radius: 999px;
+  background: #f4f1ec;
+  padding: 0.35rem 0.65rem;
+  color: #4f4a44;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.warning-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #5d574f;
+  line-height: 1.55;
+}
+
 .empty-state p {
   max-width: 44rem;
   color: #4f4a44;

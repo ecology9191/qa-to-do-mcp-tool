@@ -10,6 +10,12 @@ export interface ConfigHealthItem {
 export interface QaSessionSummary {
   readonly id: string;
   readonly title: string;
+  readonly repoName: string;
+  readonly parentIssueId: string;
+  readonly parentIssueTitle: string;
+  readonly tracker: 'beads';
+  readonly warnings: readonly string[];
+  readonly itemCount: number;
 }
 
 export interface AppShellState {
@@ -40,6 +46,33 @@ export function createInitialShellState(): AppShellState {
         label: 'Tracker readiness',
         state: 'unknown',
         summary: 'Beads or structured .scratch detection happens from the invoking repo.'
+      }
+    ]
+  };
+}
+
+export function createShellStateFromActiveSession(session: QaSessionSummary): AppShellState {
+  return {
+    ...createInitialShellState(),
+    sessions: [session],
+    configHealth: [
+      {
+        id: 'mcp',
+        label: 'MCP registration',
+        state: 'ready',
+        summary: 'A validated MCP inbox message has been received for this local app.'
+      },
+      {
+        id: 'inbox',
+        label: 'Inbox writability',
+        state: 'ready',
+        summary: 'The latest QA session was imported from the write-only MCP inbox.'
+      },
+      {
+        id: 'tracker',
+        label: 'Tracker readiness',
+        state: 'ready',
+        summary: 'This active session came from Beads child work under the selected parent issue.'
       }
     ]
   };

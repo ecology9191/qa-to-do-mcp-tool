@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/svelte';
 import App from './App.svelte';
+import { createShellStateFromActiveSession } from './lib/appShell';
 
 describe('App shell', () => {
   it('shows the empty QA session workflow before any sessions exist', () => {
@@ -20,5 +21,28 @@ describe('App shell', () => {
     expect(screen.getByRole('heading', { name: 'Tracker readiness' })).toBeInTheDocument();
     expect(screen.getByText(/No app-managed secrets/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/api key|token|password|secret/i)).not.toBeInTheDocument();
+  });
+
+  it('shows the most recent active session with repo and parent context', () => {
+    render(App, {
+      props: {
+        initialState: createShellStateFromActiveSession({
+          id: 'session-1',
+          title: 'sample-repo parent-1 QA',
+          repoName: 'sample-repo',
+          parentIssueId: 'parent-1',
+          parentIssueTitle: 'Parent feature',
+          tracker: 'beads',
+          warnings: ['1 incomplete child issue(s) were excluded from QA: child-open (open)'],
+          itemCount: 2
+        })
+      }
+    });
+
+    expect(screen.getByRole('heading', { name: 'sample-repo parent-1 QA' })).toBeInTheDocument();
+    expect(screen.getByText('sample-repo')).toBeInTheDocument();
+    expect(screen.getByText('parent-1')).toBeInTheDocument();
+    expect(screen.getByText(/2 QA items/i)).toBeInTheDocument();
+    expect(screen.getByText(/child-open \(open\)/i)).toBeInTheDocument();
   });
 });
