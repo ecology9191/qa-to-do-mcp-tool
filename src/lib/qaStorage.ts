@@ -166,6 +166,7 @@ export class QaStorageRepository {
         captured_at TEXT NOT NULL
       );
     `);
+    this.#ensureColumn('qa_sessions', 'archived_at', 'TEXT');
     this.#ensureColumn('qa_sessions', 'deleted_at', 'TEXT');
     this.#ensureColumn('qa_items', 'source_type', `TEXT NOT NULL DEFAULT 'generated'`);
     this.#ensureColumn('qa_items', 'deleted_at', 'TEXT');
@@ -509,7 +510,7 @@ export class QaStorageRepository {
   #isArchiveEligible(sessionId: string): boolean {
     const items = this.#database
       .prepare(`SELECT status, skip_reason FROM qa_items WHERE session_id = ? AND deleted_at IS NULL`)
-      .all(sessionId) as unknown as Array<{ readonly status: string; readonly skip_reason: string | null }>;
+      .all(sessionId) as unknown as ArchiveEligibilityItem[];
 
     return items.length > 0 && items.every(isTerminalForArchive);
   }
@@ -629,7 +630,7 @@ function toHistoryAction(value: string): QaItemHistoryAction {
   }
 }
 
-function isTerminalForArchive(item: { readonly status: string; readonly skip_reason: string | null }): boolean {
+function isTerminalForArchive(item: ArchiveEligibilityItem): boolean {
   return (
     item.status === 'passed' ||
     item.status === 'failed-filed' ||
@@ -732,6 +733,11 @@ interface SessionRow {
   readonly archived_at: string | null;
   readonly warnings_json: string;
   readonly source_evidence_json: string;
+}
+
+interface ArchiveEligibilityItem {
+  readonly status: string;
+  readonly skip_reason: string | null;
 }
 
 interface ItemRow {

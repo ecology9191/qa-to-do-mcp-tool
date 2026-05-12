@@ -62,7 +62,12 @@
   };
   const visibleSessions = $derived(shellState.sessions.filter((session) => !session.deletedAt && !session.archivedAt));
   const archivedSessions = $derived(shellState.sessions.filter((session) => !session.deletedAt && session.archivedAt));
-  const filteredArchivedSessions = $derived(archivedSessions.filter(matchesArchivedSearch));
+  const normalizedArchivedSearchQuery = $derived(archivedSearchQuery.trim().toLowerCase());
+  const filteredArchivedSessions = $derived(
+    normalizedArchivedSearchQuery.length === 0
+      ? archivedSessions
+      : archivedSessions.filter((session) => matchesArchivedSearch(session, normalizedArchivedSearchQuery))
+  );
   const deletedSessions = $derived(shellState.sessions.filter((session) => session.deletedAt));
   const activeSession = $derived(visibleSessions[0]);
   const visibleItems = $derived((activeSession?.items ?? []).filter((item) => !item.deletedAt));
@@ -95,10 +100,7 @@
     );
   }
 
-  function matchesArchivedSearch(session: AppShellState['sessions'][number]): boolean {
-    const query = archivedSearchQuery.trim().toLowerCase();
-    if (query.length === 0) return true;
-
+  function matchesArchivedSearch(session: AppShellState['sessions'][number], query: string): boolean {
     const searchable = [
       session.title,
       session.repoName,
