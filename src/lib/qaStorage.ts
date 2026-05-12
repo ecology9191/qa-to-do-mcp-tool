@@ -18,11 +18,37 @@ export interface ActiveQaSession {
 export interface ActiveQaItem {
   readonly id: string;
   readonly title: string;
+  readonly originalTitle: string;
+  readonly steps: readonly string[];
+  readonly originalSteps: readonly string[];
+  readonly expectedResult: string;
+  readonly originalExpectedResult: string;
   readonly sourceIssueId: string;
   readonly fingerprint: string;
   readonly confidence: 'normal' | 'low';
   readonly warnings: readonly string[];
   readonly sourceEvidence: readonly SourceEvidence[];
+  readonly status: QaItemStatus;
+  readonly skipReason?: string;
+  readonly note?: string;
+  readonly history: readonly QaItemHistoryEvent[];
+}
+
+export type QaItemStatus = 'pending' | 'passed' | 'failed' | 'skipped';
+
+type QaItemHistoryAction = 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited';
+
+export interface QaItemHistoryEvent {
+  readonly action: QaItemHistoryAction;
+  readonly createdAt: string;
+  readonly detail?: string;
+}
+
+export interface QaItemEdit {
+  readonly title: string;
+  readonly steps: readonly string[];
+  readonly expectedResult: string;
+  readonly note?: string;
 }
 
 export class QaStorageRepository {
@@ -53,14 +79,28 @@ export class QaStorageRepository {
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES qa_sessions(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
+        original_title TEXT NOT NULL,
         steps_json TEXT NOT NULL,
+        original_steps_json TEXT NOT NULL,
         expected_result TEXT NOT NULL,
+        original_expected_result TEXT NOT NULL,
         fingerprint TEXT NOT NULL UNIQUE,
         source_issue_id TEXT NOT NULL,
         confidence TEXT NOT NULL,
         warnings_json TEXT NOT NULL,
         source_evidence_json TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending'
+        status TEXT NOT NULL DEFAULT 'pending',
+        skip_reason TEXT,
+        note TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS qa_item_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id TEXT NOT NULL REFERENCES qa_items(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL REFERENCES qa_sessions(id) ON DELETE CASCADE,
+        action TEXT NOT NULL,
+        detail TEXT,
+        created_at TEXT NOT NULL
       );
     `);
   }
@@ -75,8 +115,9 @@ export class QaStorageRepository {
     `);
     const insertItem = this.#database.prepare(`
       INSERT OR IGNORE INTO qa_items (
-        id, session_id, title, steps_json, expected_result, fingerprint, source_issue_id, confidence, warnings_json, source_evidence_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, session_id, title, original_title, steps_json, original_steps_json, expected_result, original_expected_result,
+        fingerprint, source_issue_id, confidence, warnings_json, source_evidence_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     this.#database.exec('BEGIN');
@@ -102,7 +143,10 @@ export class QaStorageRepository {
           item.id,
           sessionId,
           item.title,
+          item.title,
           JSON.stringify(item.steps),
+          JSON.stringify(item.steps),
+          item.expectedResult,
           item.expectedResult,
           item.fingerprint,
           item.sourceIssueId,
@@ -117,6 +161,77 @@ export class QaStorageRepository {
       throw error;
     }
     return sessionId;
+  }
+
+  togglePassItem(sessionId: string, itemId: string, createdAt = new Date().toISOString()): void {
+    const status = this.#ensureItemExists(sessionId, itemId).status;
+    const nextStatus: QaItemStatus = status === 'passed' ? 'pending' : 'passed';
+    const action: QaItemHistoryAction = status === 'passed' ? 'unpassed' : 'passed';
+
+    this.#runInTransaction(() => {
+      this.#database
+        .prepare(`UPDATE qa_items SET status = ?, skip_reason = NULL WHERE session_id = ? AND id = ?`)
+        .run(nextStatus, sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, action, undefined, createdAt);
+    });
+  }
+
+  failItem(sessionId: string, itemId: string, createdAt = new Date().toISOString()): void {
+    this.#ensureItemExists(sessionId, itemId);
+    this.#runInTransaction(() => {
+      this.#database
+        .prepare(`UPDATE qa_items SET status = ?, skip_reason = NULL WHERE session_id = ? AND id = ?`)
+        .run('failed', sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, 'failed', undefined, createdAt);
+    });
+  }
+
+  skipItem(sessionId: string, itemId: string, reason: string, createdAt = new Date().toISOString()): void {
+    const normalizedReason = reason.trim();
+    if (normalizedReason.length === 0) {
+      throw new Error('Skip reason is required.');
+    }
+
+    this.#ensureItemExists(sessionId, itemId);
+    this.#runInTransaction(() => {
+      this.#database
+        .prepare(`UPDATE qa_items SET status = ?, skip_reason = ? WHERE session_id = ? AND id = ?`)
+        .run('skipped', normalizedReason, sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, 'skipped', normalizedReason, createdAt);
+    });
+  }
+
+  editItem(sessionId: string, itemId: string, edit: QaItemEdit, createdAt = new Date().toISOString()): void {
+    const title = edit.title.trim();
+    const steps = edit.steps.map((step) => step.trim());
+    const expectedResult = edit.expectedResult.trim();
+    const note = edit.note?.trim();
+
+    if (title.length === 0 || expectedResult.length === 0 || steps.length === 0) {
+      throw new Error('Edited QA items require title, steps, and expected result.');
+    }
+    if (steps.some((step) => step.length === 0)) {
+      throw new Error('Edited QA item steps cannot be blank.');
+    }
+
+    this.#ensureItemExists(sessionId, itemId);
+    this.#runInTransaction(() => {
+      this.#database
+        .prepare(`UPDATE qa_items SET title = ?, steps_json = ?, expected_result = ?, note = ? WHERE session_id = ? AND id = ?`)
+        .run(title, JSON.stringify(steps), expectedResult, note || null, sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, 'edited', note || 'Generated text edited', createdAt);
+    });
+  }
+
+  #runInTransaction(action: () => void): void {
+    this.#database.exec('BEGIN');
+    try {
+      action();
+      this.#database.exec('COMMIT');
+    } catch (error) {
+      this.#database.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   getMostRecentActiveSession(): ActiveQaSession | undefined {
@@ -145,8 +260,44 @@ export class QaStorageRepository {
       generatedAt: session.generated_at,
       warnings: parseJson<string[]>(session.warnings_json),
       sourceEvidence: parseJson<SourceEvidence[]>(session.source_evidence_json),
-      items: itemRows.map(toActiveItem)
+      items: itemRows.map((item) => toActiveItem(item, this.#getItemHistory(session.id, item.id)))
     };
+  }
+
+  #ensureItemExists(sessionId: string, itemId: string): { readonly status: QaItemStatus } {
+    const row = this.#database
+      .prepare(`SELECT status FROM qa_items WHERE session_id = ? AND id = ?`)
+      .get(sessionId, itemId) as unknown as { readonly status: string } | undefined;
+
+    if (!row) {
+      throw new Error(`QA item ${itemId} was not found in session ${sessionId}.`);
+    }
+
+    return { status: toQaItemStatus(row.status) };
+  }
+
+  #recordHistory(
+    sessionId: string,
+    itemId: string,
+    action: QaItemHistoryAction,
+    detail: string | undefined,
+    createdAt: string
+  ): void {
+    this.#database
+      .prepare(`INSERT INTO qa_item_history (item_id, session_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(itemId, sessionId, action, detail ?? null, createdAt);
+  }
+
+  #getItemHistory(sessionId: string, itemId: string): QaItemHistoryEvent[] {
+    const rows = this.#database
+      .prepare(`SELECT action, detail, created_at FROM qa_item_history WHERE session_id = ? AND item_id = ? ORDER BY id ASC`)
+      .all(sessionId, itemId) as unknown as HistoryRow[];
+
+    return rows.map((row) => ({
+      action: toHistoryAction(row.action),
+      createdAt: row.created_at,
+      ...(row.detail ? { detail: row.detail } : {})
+    }));
   }
 
   close(): void {
@@ -154,16 +305,45 @@ export class QaStorageRepository {
   }
 }
 
-function toActiveItem(item: ItemRow): ActiveQaItem {
+function toActiveItem(item: ItemRow, history: readonly QaItemHistoryEvent[]): ActiveQaItem {
   return {
     id: item.id,
     title: item.title,
+    originalTitle: item.original_title,
+    steps: parseJson<string[]>(item.steps_json),
+    originalSteps: parseJson<string[]>(item.original_steps_json),
+    expectedResult: item.expected_result,
+    originalExpectedResult: item.original_expected_result,
     sourceIssueId: item.source_issue_id,
     fingerprint: item.fingerprint,
     confidence: item.confidence === 'low' ? 'low' : 'normal',
     warnings: parseJson<string[]>(item.warnings_json),
-    sourceEvidence: parseJson<SourceEvidence[]>(item.source_evidence_json)
+    sourceEvidence: parseJson<SourceEvidence[]>(item.source_evidence_json),
+    status: toQaItemStatus(item.status),
+    ...(item.skip_reason ? { skipReason: item.skip_reason } : {}),
+    ...(item.note ? { note: item.note } : {}),
+    history
   };
+}
+
+function toQaItemStatus(value: string): QaItemStatus {
+  if (value === 'passed' || value === 'failed' || value === 'skipped') {
+    return value;
+  }
+  return 'pending';
+}
+
+function toHistoryAction(value: string): QaItemHistoryAction {
+  switch (value) {
+    case 'passed':
+    case 'unpassed':
+    case 'failed':
+    case 'skipped':
+    case 'edited':
+      return value;
+    default:
+      throw new Error(`Unknown QA item history action: ${value}`);
+  }
 }
 
 function createSessionId(payload: QaSessionPayload): string {
@@ -190,9 +370,23 @@ interface SessionRow {
 interface ItemRow {
   readonly id: string;
   readonly title: string;
+  readonly original_title: string;
+  readonly steps_json: string;
+  readonly original_steps_json: string;
+  readonly expected_result: string;
+  readonly original_expected_result: string;
   readonly source_issue_id: string;
   readonly fingerprint: string;
   readonly confidence: string;
   readonly warnings_json: string;
   readonly source_evidence_json: string;
+  readonly status: string;
+  readonly skip_reason: string | null;
+  readonly note: string | null;
+}
+
+interface HistoryRow {
+  readonly action: string;
+  readonly detail: string | null;
+  readonly created_at: string;
 }
