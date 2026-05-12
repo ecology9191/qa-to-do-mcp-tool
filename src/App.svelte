@@ -247,6 +247,10 @@
     refreshSessionItemCount(activeSession);
     selectedIndex = filteredItems.length;
     expandedItemId = item.id;
+    resetManualForm();
+  }
+
+  function resetManualForm(): void {
     manualFormOpen = false;
     manualTitle = '';
     manualSteps = '';
@@ -257,11 +261,15 @@
   function softDeleteItem(item: QaChecklistItem): void {
     item.deletedAt = new Date().toISOString();
     recordHistory(item, 'soft-deleted');
-    if (expandedItemId === item.id) expandedItemId = undefined;
-    if (historyItemId === item.id) historyItemId = undefined;
-    if (failureComposerItemId === item.id) resetFailureComposer();
+    clearDeletedItemState(item.id);
     if (activeSession) refreshSessionItemCount(activeSession);
     selectedIndex = Math.min(selectedIndex, Math.max(filteredItems.length - 2, 0));
+  }
+
+  function clearDeletedItemState(itemId: string): void {
+    if (expandedItemId === itemId) expandedItemId = undefined;
+    if (historyItemId === itemId) historyItemId = undefined;
+    if (failureComposerItemId === itemId) resetFailureComposer();
   }
 
   function restoreItem(item: QaChecklistItem): void {

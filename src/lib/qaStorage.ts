@@ -84,6 +84,9 @@ interface ScreenshotStorageLocation {
   readonly localReference: string;
 }
 
+const manualItemSourceIssueId = 'manual';
+const manualItemHistoryDetail = 'Manual QA item added';
+
 export class QaStorageRepository {
   readonly #database: DatabaseSync;
   readonly #storageRoot: string;
@@ -249,14 +252,14 @@ export class QaStorageRepository {
           expectedResult,
           expectedResult,
           `manual:${itemId}`,
-          'manual',
+          manualItemSourceIssueId,
           'manual',
           'normal',
           JSON.stringify([]),
           JSON.stringify(sourceEvidence),
           note || null
         );
-      this.#recordHistory(sessionId, itemId, 'manual-added', note || 'Manual QA item added', createdAt);
+      this.#recordHistory(sessionId, itemId, 'manual-added', note || manualItemHistoryDetail, createdAt);
     });
 
     return itemId;
@@ -376,7 +379,9 @@ export class QaStorageRepository {
   softDeleteItem(sessionId: string, itemId: string, deletedAt = new Date().toISOString()): void {
     this.#ensureItemExists(sessionId, itemId);
     this.#runInTransaction(() => {
-      this.#database.prepare(`UPDATE qa_items SET deleted_at = ? WHERE session_id = ? AND id = ?`).run(deletedAt, sessionId, itemId);
+      this.#database
+        .prepare(`UPDATE qa_items SET deleted_at = ? WHERE session_id = ? AND id = ?`)
+        .run(deletedAt, sessionId, itemId);
       this.#recordHistory(sessionId, itemId, 'soft-deleted', undefined, deletedAt);
     });
   }
@@ -384,7 +389,9 @@ export class QaStorageRepository {
   restoreItem(sessionId: string, itemId: string, restoredAt = new Date().toISOString()): void {
     this.#ensureItemExists(sessionId, itemId);
     this.#runInTransaction(() => {
-      this.#database.prepare(`UPDATE qa_items SET deleted_at = NULL WHERE session_id = ? AND id = ?`).run(sessionId, itemId);
+      this.#database
+        .prepare(`UPDATE qa_items SET deleted_at = NULL WHERE session_id = ? AND id = ?`)
+        .run(sessionId, itemId);
       this.#recordHistory(sessionId, itemId, 'restored', undefined, restoredAt);
     });
   }
@@ -455,7 +462,9 @@ export class QaStorageRepository {
   }
 
   #ensureSessionExists(sessionId: string): void {
-    const row = this.#database.prepare(`SELECT id FROM qa_sessions WHERE id = ?`).get(sessionId) as unknown as { readonly id: string } | undefined;
+    const row = this.#database
+      .prepare(`SELECT id FROM qa_sessions WHERE id = ?`)
+      .get(sessionId) as unknown as { readonly id: string } | undefined;
     if (!row) {
       throw new Error(`QA session ${sessionId} was not found.`);
     }
