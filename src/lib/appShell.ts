@@ -16,6 +16,38 @@ export interface QaSessionSummary {
   readonly tracker: 'beads';
   readonly warnings: readonly string[];
   readonly itemCount: number;
+  readonly items?: readonly QaChecklistItem[];
+}
+
+export type QaChecklistStatus = 'pending' | 'passed' | 'failed' | 'skipped';
+
+export interface QaChecklistItem {
+  id: string;
+  title: string;
+  originalTitle: string;
+  steps: string[];
+  originalSteps: string[];
+  expectedResult: string;
+  originalExpectedResult: string;
+  sourceIssueId: string;
+  confidence: 'normal' | 'low';
+  warnings: string[];
+  sourceEvidence: SourceEvidence[];
+  status: QaChecklistStatus;
+  skipReason?: string;
+  note?: string;
+  history: QaChecklistHistoryEvent[];
+}
+
+export interface QaChecklistHistoryEvent {
+  action: string;
+  createdAt: string;
+  detail?: string;
+}
+
+export interface SourceEvidence {
+  readonly label: string;
+  readonly value: string;
 }
 
 export interface AppShellState {

@@ -1,19 +1,193 @@
 <script lang="ts">
-  import { createInitialShellState, emptyStateCommand, type AppShellState, type HealthState } from './lib/appShell';
+  import {
+    createInitialShellState,
+    emptyStateCommand,
+    type AppShellState,
+    type HealthState,
+    type QaChecklistItem,
+    type QaChecklistStatus
+  } from './lib/appShell';
 
   interface AppProps {
     readonly initialState?: AppShellState;
   }
 
   let { initialState = createInitialShellState() }: AppProps = $props();
-  const state = $derived(initialState);
-  const activeSession = $derived(state.sessions[0]);
+  let shellState: AppShellState = $state(createInitialShellState());
+  const activeSession = $derived(shellState.sessions[0]);
+  let selectedIndex = $state(0);
+  let expandedItemId: string | undefined = $state();
+  let editingItemId: string | undefined = $state();
+  let skipItemId: string | undefined = $state();
+  let historyItemId: string | undefined = $state();
+  let searchQuery = $state('');
+  let statusFilter: 'all' | QaChecklistStatus = $state('all');
+  let sourceFilter = $state('all');
+  let editTitle = $state('');
+  let editSteps = $state('');
+  let editExpectedResult = $state('');
+  let editNote = $state('');
+  let skipReason = $state('');
   const healthLabels: Record<HealthState, string> = {
     ready: 'Ready',
     'needs-setup': 'Needs setup',
     unknown: 'Not checked'
   };
+  const sourceIssueOptions = $derived([...new Set((activeSession?.items ?? []).map((item: QaChecklistItem) => item.sourceIssueId))]);
+  const filteredItems = $derived((activeSession?.items ?? []).filter(matchesFilters));
+
+  $effect.pre(() => {
+    shellState = initialState;
+  });
+
+  function matchesFilters(item: QaChecklistItem): boolean {
+    const query = searchQuery.trim().toLowerCase();
+    const searchable = [
+      item.title,
+      item.sourceIssueId,
+      item.expectedResult,
+      ...item.steps,
+      ...item.sourceEvidence.map((evidence) => `${evidence.label} ${evidence.value}`),
+      activeSession?.repoName ?? '',
+      activeSession?.title ?? ''
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return (
+      (query.length === 0 || searchable.includes(query)) &&
+      (statusFilter === 'all' || item.status === statusFilter) &&
+      (sourceFilter === 'all' || item.sourceIssueId === sourceFilter)
+    );
+  }
+
+  function selectedItem(): QaChecklistItem | undefined {
+    return filteredItems[Math.min(selectedIndex, Math.max(filteredItems.length - 1, 0))];
+  }
+
+  function moveSelection(delta: number): void {
+    if (filteredItems.length === 0) return;
+    selectedIndex = Math.max(0, Math.min(filteredItems.length - 1, selectedIndex + delta));
+  }
+
+  function togglePass(item: QaChecklistItem): void {
+    if (item.status === 'passed') {
+      item.status = 'pending';
+      item.history = [...item.history, historyEvent('unpassed')];
+      return;
+    }
+    item.status = 'passed';
+    item.skipReason = undefined;
+    item.history = [...item.history, historyEvent('passed')];
+  }
+
+  function failItem(item: QaChecklistItem): void {
+    item.status = 'failed';
+    item.skipReason = undefined;
+    item.history = [...item.history, historyEvent('failed')];
+  }
+
+  function startSkip(item: QaChecklistItem): void {
+    skipItemId = item.id;
+    skipReason = item.skipReason ?? '';
+    expandedItemId = item.id;
+  }
+
+  function saveSkip(item: QaChecklistItem): void {
+    const reason = skipReason.trim();
+    if (reason.length === 0) return;
+    item.status = 'skipped';
+    item.skipReason = reason;
+    item.history = [...item.history, historyEvent('skipped', reason)];
+    skipItemId = undefined;
+    skipReason = '';
+  }
+
+  function startEdit(item: QaChecklistItem): void {
+    editingItemId = item.id;
+    expandedItemId = item.id;
+    editTitle = item.title;
+    editSteps = item.steps.join('\n');
+    editExpectedResult = item.expectedResult;
+    editNote = item.note ?? '';
+  }
+
+  function saveEdit(item: QaChecklistItem): void {
+    const steps = editSteps
+      .split('\n')
+      .map((step: string) => step.trim())
+      .filter(Boolean);
+    if (editTitle.trim().length === 0 || editExpectedResult.trim().length === 0 || steps.length === 0) return;
+
+    item.title = editTitle.trim();
+    item.steps = steps;
+    item.expectedResult = editExpectedResult.trim();
+    item.note = editNote.trim() || undefined;
+    item.history = [...item.history, historyEvent('edited', item.note ?? 'Generated text edited')];
+    editingItemId = undefined;
+  }
+
+  function toggleExpanded(item: QaChecklistItem): void {
+    expandedItemId = expandedItemId === item.id ? undefined : item.id;
+  }
+
+  function toggleHistory(item: QaChecklistItem): void {
+    historyItemId = historyItemId === item.id ? undefined : item.id;
+    expandedItemId = item.id;
+  }
+
+  function handleGlobalKeydown(event: KeyboardEvent): void {
+    if (isTypingTarget(event.target) || event.defaultPrevented || !activeSession?.items?.length) return;
+
+    const item = selectedItem();
+    if (!item) return;
+
+    if (event.key === 'j') {
+      event.preventDefault();
+      moveSelection(1);
+    } else if (event.key === 'k') {
+      event.preventDefault();
+      moveSelection(-1);
+    } else if (event.key === ' ') {
+      event.preventDefault();
+      togglePass(item);
+    } else if (event.key === 'f') {
+      event.preventDefault();
+      failItem(item);
+    } else if (event.key === 's') {
+      event.preventDefault();
+      startSkip(item);
+    } else if (event.key === 'e') {
+      event.preventDefault();
+      startEdit(item);
+    } else if (event.key === '/') {
+      event.preventDefault();
+      document.getElementById('checklist-search')?.focus();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      toggleExpanded(item);
+    } else if (event.key === 'a') {
+      event.preventDefault();
+      expandedItemId = undefined;
+    }
+  }
+
+  function isTypingTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+  }
+
+  function historyEvent(action: string, detail?: string): { action: string; createdAt: string; detail?: string } {
+    return { action, createdAt: new Date().toISOString(), ...(detail ? { detail } : {}) };
+  }
+
+  function formatHistory(event: { action: string; detail?: string }): string {
+    const label = `${event.action.charAt(0).toUpperCase()}${event.action.slice(1)}`;
+    return event.detail ? `${label}: ${event.detail}` : label;
+  }
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <svelte:head>
   <title>QA To Do</title>
@@ -26,7 +200,7 @@
     <p class="lede">A local-first checklist for human QA after agent-generated software work.</p>
   </header>
 
-  {#if state.sessions.length === 0}
+  {#if shellState.sessions.length === 0}
     <section class="empty-state" aria-labelledby="empty-title">
       <div>
         <p class="section-kicker">No QA sessions yet</p>
@@ -64,6 +238,152 @@
           {/each}
         </ul>
       {/if}
+      {#if activeSession.items && activeSession.items.length > 0}
+        <div class="shortcut-preview" aria-label="Keyboard shortcuts">
+          <button type="button">j/k Navigate</button>
+          <button type="button">Space Pass/unpass</button>
+          <button type="button">f Fail</button>
+          <button type="button">s Skip</button>
+          <button type="button">e Edit</button>
+          <button type="button">/ Search</button>
+          <button type="button">Enter Expand</button>
+          <button type="button">a Archive</button>
+        </div>
+
+        <div class="checklist-tools" aria-label="Checklist filters">
+          <label>
+            Search checklist
+            <input
+              id="checklist-search"
+              bind:value={searchQuery}
+              aria-label="Search checklist"
+              placeholder="Search title, evidence, repo"
+            />
+          </label>
+          <label>
+            Status
+            <select bind:value={statusFilter} aria-label="Status filter">
+              <option value="all">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+              <option value="skipped">Skipped</option>
+            </select>
+          </label>
+          <label>
+            Source issue
+            <select bind:value={sourceFilter} aria-label="Source issue filter">
+              <option value="all">All source issues</option>
+              {#each sourceIssueOptions as sourceIssueId}
+                <option value={sourceIssueId}>{sourceIssueId}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+
+        <div class="checklist" role="table" aria-label="QA checklist">
+          {#each filteredItems as item, index (item.id)}
+            <div
+              role="row"
+              tabindex="-1"
+              aria-label={`${item.sourceIssueId} ${item.title} ${item.status}`}
+              class="checklist-row"
+              class:is-selected={index === selectedIndex}
+              class:is-failed={item.status === 'failed'}
+              onmouseenter={() => (selectedIndex = index)}
+            >
+              <div class="checklist-row__summary">
+                <button
+                  class={`status-square status-square--${item.status}`}
+                  type="button"
+                  aria-label={`Mark ${item.title} passed`}
+                  onclick={() => togglePass(item)}
+                >
+                  <span aria-hidden="true">{item.status === 'passed' ? '✓' : ''}</span>
+                </button>
+                <span class="source-badge">{item.sourceIssueId}</span>
+                <button class="row-title" type="button" onclick={() => toggleExpanded(item)}>{item.title}</button>
+                {#if item.confidence === 'low'}
+                  <span class="low-confidence">Low confidence</span>
+                {/if}
+                <span class={`item-state item-state--${item.status}`}>{item.status}</span>
+              </div>
+              <div class="row-actions">
+                <button type="button" onclick={() => failItem(item)} aria-label={`Fail ${item.title}`}>Fail</button>
+                <button type="button" onclick={() => startSkip(item)} aria-label={`Skip ${item.title}`}>Skip</button>
+                <button type="button" onclick={() => startEdit(item)} aria-label={`Edit ${item.title}`}>Edit</button>
+                <button type="button" onclick={() => toggleHistory(item)} aria-label={`History ${item.title}`}>History</button>
+              </div>
+
+              {#if expandedItemId === item.id}
+                <div class="item-detail">
+                  {#if editingItemId === item.id}
+                    <div class="edit-form">
+                      <label>Title<input bind:value={editTitle} aria-label="Title" /></label>
+                      <label>Steps<textarea bind:value={editSteps} aria-label="Steps"></textarea></label>
+                      <label>Expected result<textarea bind:value={editExpectedResult} aria-label="Expected result"></textarea></label>
+                      <label>Notes<textarea bind:value={editNote} aria-label="Notes"></textarea></label>
+                      <button type="button" onclick={() => saveEdit(item)}>Save edit</button>
+                    </div>
+                  {:else}
+                    <section>
+                      <h3>Steps</h3>
+                      <ol>
+                        {#each item.steps as step}
+                          <li>{step}</li>
+                        {/each}
+                      </ol>
+                    </section>
+                    <section>
+                      <h3>Expected result</h3>
+                      <p>{item.expectedResult}</p>
+                    </section>
+                    <section>
+                      <h3>Evidence</h3>
+                      {#each item.sourceEvidence as evidence}
+                        <p><strong>{evidence.label}</strong>: {evidence.value}</p>
+                      {/each}
+                    </section>
+                    <section>
+                      <h3>Notes</h3>
+                      <p>{item.note ?? 'No reviewer notes yet.'}</p>
+                    </section>
+                    {#if item.title !== item.originalTitle || item.expectedResult !== item.originalExpectedResult || item.steps.join('\n') !== item.originalSteps.join('\n')}
+                      <section class="original-text">
+                        <h3>Original generated text</h3>
+                        <p>{item.originalTitle}</p>
+                        <p>{item.originalExpectedResult}</p>
+                      </section>
+                    {/if}
+                  {/if}
+
+                  {#if skipItemId === item.id}
+                    <div class="skip-form">
+                      <label>Skip reason<input bind:value={skipReason} aria-label="Skip reason" /></label>
+                      <button type="button" onclick={() => saveSkip(item)}>Save skip</button>
+                    </div>
+                  {/if}
+
+                  {#if historyItemId === item.id}
+                    <section class="history-panel" aria-label={`State history for ${item.title}`}>
+                      <h3>State history</h3>
+                      {#if item.history.length === 0}
+                        <p>No state changes yet.</p>
+                      {:else}
+                        <ol>
+                          {#each item.history as event}
+                            <li>{formatHistory(event)}</li>
+                          {/each}
+                        </ol>
+                      {/if}
+                    </section>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
     </section>
   {/if}
 
@@ -74,7 +394,7 @@
     </div>
 
     <div class="health-grid">
-      {#each state.configHealth as item (item.id)}
+      {#each shellState.configHealth as item (item.id)}
         <article class="health-card" aria-labelledby={`${item.id}-label`}>
           <div class="health-card__topline">
             <h3 id={`${item.id}-label`}>{item.label}</h3>
@@ -86,3 +406,115 @@
     </div>
   </section>
 </main>
+
+<style>
+  .shortcut-preview,
+  .checklist-tools,
+  .checklist-row__summary,
+  .row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .shortcut-preview {
+    margin-top: 1rem;
+  }
+
+  .shortcut-preview button,
+  .row-actions button,
+  .checklist-tools input,
+  .checklist-tools select,
+  .edit-form input,
+  .edit-form textarea,
+  .skip-form input {
+    border: 1px solid #1f1f1f;
+    background: #fff;
+    color: #111;
+  }
+
+  .shortcut-preview button,
+  .row-actions button {
+    padding: 0.25rem 0.5rem;
+  }
+
+  .checklist-tools {
+    margin: 1rem 0;
+  }
+
+  .checklist-tools label,
+  .edit-form label,
+  .skip-form label {
+    display: grid;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .checklist-row {
+    border-top: 1px solid #d8d8d8;
+    padding: 0.55rem 0;
+  }
+
+  .checklist-row.is-selected {
+    outline: 2px solid #111;
+    outline-offset: 2px;
+  }
+
+  .checklist-row.is-failed .item-state {
+    color: #b00020;
+  }
+
+  .status-square {
+    width: 1.1rem;
+    height: 1.1rem;
+    border: 2px solid #111;
+    background: #fff;
+    display: inline-grid;
+    place-items: center;
+    line-height: 1;
+  }
+
+  .status-square--passed {
+    background: #111;
+    color: #fff;
+  }
+
+  .source-badge,
+  .low-confidence,
+  .item-state {
+    border: 1px solid #1f1f1f;
+    padding: 0.1rem 0.35rem;
+    font-size: 0.78rem;
+  }
+
+  .low-confidence {
+    border-style: dashed;
+  }
+
+  .row-title {
+    border: 0;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    padding: 0;
+  }
+
+  .item-detail {
+    margin-top: 0.75rem;
+    padding-left: 2rem;
+  }
+
+  .edit-form,
+  .skip-form {
+    display: grid;
+    gap: 0.6rem;
+    max-width: 42rem;
+  }
+
+  .edit-form textarea {
+    min-height: 4rem;
+  }
+</style>
