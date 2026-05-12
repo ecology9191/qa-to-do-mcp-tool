@@ -82,17 +82,14 @@ type OpenCodeConfigOperationResult =
 
 export async function createProviderSetupPlan(options: ProviderSetupOptions): Promise<ProviderSetupPlan> {
   if (options.provider !== 'opencode') {
-    return {
-      provider: options.provider,
-      status: 'manual',
-      capabilities: manualProviderCapabilities,
-      operations: [],
-      manualInstructions: [
+    return createManualProviderSetupPlan(
+      options.provider,
+      [
         `${options.provider} setup is not safely editable by this installer yet.`,
         'Install a global /to-qa command or rule that invokes the to-qa workflow, then register the local qa-to-do MCP server with your provider.',
         'Use provider-native auth or user environment/config for credentials; do not store secrets in QA To Do setup files.'
       ]
-    };
+    );
   }
 
   return createOpenCodeSetupPlan(options);
@@ -162,13 +159,7 @@ async function createOpenCodeSetupPlan(options: ProviderSetupOptions): Promise<P
   const configOperation = createOpenCodeConfigOperation(configPath, configRead, options.mcpCommand);
 
   if (configOperation.status === 'manual') {
-    return {
-      provider: options.provider,
-      status: 'manual',
-      capabilities: manualProviderCapabilities,
-      operations: [],
-      manualInstructions: configOperation.manualInstructions
-    };
+    return createManualProviderSetupPlan(options.provider, configOperation.manualInstructions);
   }
 
   const [commandRead, skillRead] = await Promise.all([readOptionalFile(commandPath), readOptionalFile(skillPath)]);
@@ -187,6 +178,19 @@ async function createOpenCodeSetupPlan(options: ProviderSetupOptions): Promise<P
       'Preview every operation before applying; these file contents are the exact OpenCode setup changes.',
       'This setup does not store app-managed secrets. Use user environment, existing provider config, or provider-native auth.'
     ]
+  };
+}
+
+function createManualProviderSetupPlan(
+  provider: string,
+  manualInstructions: readonly string[]
+): ProviderSetupPlan {
+  return {
+    provider,
+    status: 'manual',
+    capabilities: manualProviderCapabilities,
+    operations: [],
+    manualInstructions
   };
 }
 
