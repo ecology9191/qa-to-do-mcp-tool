@@ -228,9 +228,8 @@ export class QaStorageRepository {
 
   importSession(payload: QaSessionPayload, importedAt = new Date().toISOString()): string {
     const activeSession = this.#findActiveSession(payload);
-    const nextSessionVersion = activeSession ? activeSession.session_version : this.#nextSessionVersion(payload);
-    const sessionId = activeSession?.id ?? createSessionId(payload, nextSessionVersion);
-    const sessionVersion = activeSession?.session_version ?? nextSessionVersion;
+    const sessionVersion = activeSession?.session_version ?? this.#nextSessionVersion(payload);
+    const sessionId = activeSession?.id ?? createSessionId(payload, sessionVersion);
     const insertSession = this.#database.prepare(`
       INSERT INTO qa_sessions (
         id, title, tracker, repo_name, repo_path, parent_issue_id, parent_issue_title, parent_issue_status,
@@ -250,8 +249,7 @@ export class QaStorageRepository {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    this.#database.exec('BEGIN');
-    try {
+    this.#runInTransaction(() => {
       if (activeSession) {
         updateSession.run(
           payload.title,
@@ -306,11 +304,7 @@ export class QaStorageRepository {
           JSON.stringify(item.sourceEvidence)
         );
       }
-      this.#database.exec('COMMIT');
-    } catch (error) {
-      this.#database.exec('ROLLBACK');
-      throw error;
-    }
+    });
     return sessionId;
   }
 
@@ -783,12 +777,16 @@ export class QaStorageRepository {
       return preferredItemId;
     }
 
-    const versionedItemId = `${preferredItemId}-${shortHash(sessionId)}`;
-    if (!this.#itemIdExists(versionedItemId)) {
-      return versionedItemId;
+    const sessionScopedItemId = `${preferredItemId}-${shortHash(sessionId)}`;
+    if (!this.#itemIdExists(sessionScopedItemId)) {
+      return sessionScopedItemId;
     }
 
-    return `${preferredItemId}-${shortHash(`${sessionId}:${Date.now()}`)}`;
+    let suffix = 2;
+    while (this.#itemIdExists(`${sessionScopedItemId}-${suffix}`)) {
+      suffix += 1;
+    }
+    return `${sessionScopedItemId}-${suffix}`;
   }
 
   #itemIdExists(itemId: string): boolean {
