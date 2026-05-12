@@ -20,7 +20,7 @@
   }
 
   type ChecklistFilterStatus = 'all' | QaChecklistStatus;
-  type AudioContextConstructor = new () => AudioContext;
+  type BrowserAudioContextConstructor = new () => AudioContext;
 
   const interactionSettingsKey = 'qa-to-do.interaction-settings';
   const defaultInteractionSettings: InteractionSettings = {
@@ -220,12 +220,14 @@
   }
 
   function updatePassChimeMuted(event: Event): void {
-    interactionSettings.passChimeMuted = (event.currentTarget as HTMLInputElement).checked;
+    const input = event.currentTarget as HTMLInputElement;
+    interactionSettings.passChimeMuted = input.checked;
     persistInteractionSettings(interactionSettings);
   }
 
   function updatePassChimeVolume(event: Event): void {
-    const volume = Number((event.currentTarget as HTMLInputElement).value) / 100;
+    const input = event.currentTarget as HTMLInputElement;
+    const volume = Number(input.value) / 100;
     interactionSettings.passChimeVolume = clampVolume(volume);
     persistInteractionSettings(interactionSettings);
   }
@@ -237,14 +239,20 @@
     if (!stored) return { ...defaultInteractionSettings };
 
     try {
-      const parsed = JSON.parse(stored) as Partial<InteractionSettings>;
-      return {
-        passChimeMuted: parsed.passChimeMuted === true,
-        passChimeVolume: clampVolume(parsed.passChimeVolume)
-      };
+      return normalizeInteractionSettings(JSON.parse(stored));
     } catch {
       return { ...defaultInteractionSettings };
     }
+  }
+
+  function normalizeInteractionSettings(value: unknown): InteractionSettings {
+    if (!value || typeof value !== 'object') return { ...defaultInteractionSettings };
+
+    const settings = value as Record<string, unknown>;
+    return {
+      passChimeMuted: settings.passChimeMuted === true,
+      passChimeVolume: clampVolume(settings.passChimeVolume)
+    };
   }
 
   function persistInteractionSettings(settings: InteractionSettings): void {
@@ -255,14 +263,14 @@
   function playPassChime(settings: InteractionSettings): void {
     if (settings.passChimeMuted || settings.passChimeVolume <= 0) return;
     const audioGlobal = globalThis as typeof globalThis & {
-      AudioContext?: AudioContextConstructor;
-      webkitAudioContext?: AudioContextConstructor;
+      AudioContext?: BrowserAudioContextConstructor;
+      webkitAudioContext?: BrowserAudioContextConstructor;
     };
-    const AudioContextConstructor = audioGlobal.AudioContext ?? audioGlobal.webkitAudioContext;
-    if (!AudioContextConstructor) return;
+    const AudioContextCtor = audioGlobal.AudioContext ?? audioGlobal.webkitAudioContext;
+    if (!AudioContextCtor) return;
 
     try {
-      const context = new AudioContextConstructor();
+      const context = new AudioContextCtor();
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       const now = context.currentTime;

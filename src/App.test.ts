@@ -139,36 +139,38 @@ describe('App shell', () => {
 });
 
 function installAudioContextStub() {
-  const oscillatorStart = vi.fn();
-  const oscillatorStop = vi.fn();
-  const oscillatorConnect = vi.fn();
-  const gainConnect = vi.fn();
+  const frequencySetValueAtTime = vi.fn();
   const gainSetValueAtTime = vi.fn();
   const gainRamp = vi.fn();
-  const frequencySetValueAtTime = vi.fn();
+  const oscillatorStart = vi.fn();
+  const oscillatorStop = vi.fn();
+
+  const oscillator = {
+    type: 'sine',
+    frequency: { setValueAtTime: frequencySetValueAtTime },
+    connect: vi.fn(),
+    start: oscillatorStart,
+    stop: oscillatorStop
+  };
+
+  const gain = {
+    gain: {
+      setValueAtTime: gainSetValueAtTime,
+      exponentialRampToValueAtTime: gainRamp
+    },
+    connect: vi.fn()
+  };
 
   class FakeAudioContext {
     currentTime = 10;
     destination = {};
 
     createOscillator() {
-      return {
-        type: 'sine',
-        frequency: { setValueAtTime: frequencySetValueAtTime },
-        connect: oscillatorConnect,
-        start: oscillatorStart,
-        stop: oscillatorStop
-      };
+      return oscillator;
     }
 
     createGain() {
-      return {
-        gain: {
-          setValueAtTime: gainSetValueAtTime,
-          exponentialRampToValueAtTime: gainRamp
-        },
-        connect: gainConnect
-      };
+      return gain;
     }
   }
 
