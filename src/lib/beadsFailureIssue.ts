@@ -252,14 +252,12 @@ function createFailureDescription(
   dedupeFingerprint: string,
   discoveredFromIssueId: string
 ): string {
-  const steps = context.item.steps.map((step) => `- ${step}`).join('\n');
-  const sourceEvidence = context.item.sourceEvidence.map((evidence) => `- ${evidence.label}: ${evidence.value}`).join('\n');
-  const screenshots =
-    context.screenshots.length > 0
-      ? context.screenshots
-          .map((screenshot) => `- ${screenshot.name} (${screenshot.mimeType}, ${screenshot.sizeBytes} bytes): ${screenshot.localReference}`)
-          .join('\n')
-      : '- None attached';
+  const steps = formatMarkdownList(context.item.steps, (step) => step);
+  const sourceEvidence = formatMarkdownList(
+    context.item.sourceEvidence,
+    (evidence) => `${evidence.label}: ${evidence.value}`
+  );
+  const screenshots = formatScreenshotReferences(context.screenshots);
 
   return `## QA failure
 
@@ -289,6 +287,21 @@ ${sourceEvidence}
 ${screenshots}
 
 QA-Failure-Fingerprint: ${dedupeFingerprint}`;
+}
+
+function formatScreenshotReferences(screenshots: readonly FailureScreenshotReference[]): string {
+  if (screenshots.length === 0) {
+    return '- None attached';
+  }
+
+  return formatMarkdownList(
+    screenshots,
+    (screenshot) => `${screenshot.name} (${screenshot.mimeType}, ${screenshot.sizeBytes} bytes): ${screenshot.localReference}`
+  );
+}
+
+function formatMarkdownList<T>(items: readonly T[], formatItem: (item: T) => string): string {
+  return items.map((item) => `- ${formatItem(item)}`).join('\n');
 }
 
 function createCopyableIssueText(title: string, description: string, discoveredFromIssueId: string): string {
