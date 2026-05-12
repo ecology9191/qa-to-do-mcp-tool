@@ -1,6 +1,7 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FailureScreenshotReference, SourceEvidence } from './beadsFailureIssue';
+import { listScratchMarkdownFiles, sanitizeScratchPathSegment } from './scratchFiles';
 
 export interface ScratchFailureIssueContext {
   readonly repo: {
@@ -62,7 +63,7 @@ export function draftScratchFailureIssue(context: ScratchFailureIssueContext): S
 
   const discoveredFromIssueId = context.item.sourceIssueId?.trim() || context.parentIssue.id;
   const dedupeFingerprint = `qa-failure:${context.repo.path}:${context.parentIssue.id}:${context.item.fingerprint}`;
-  const id = `qa-failure-${sanitizePathSegment(context.parentIssue.id)}-${sanitizePathSegment(context.item.fingerprint)}`;
+  const id = `qa-failure-${sanitizeScratchPathSegment(context.parentIssue.id)}-${sanitizeScratchPathSegment(context.item.fingerprint)}`;
   const title = `Bug: ${context.item.title}`;
   const markdown = createFailureMarkdown(context, id, title, actualBehavior, dedupeFingerprint, discoveredFromIssueId);
 
@@ -175,7 +176,7 @@ function formatMarkdownList<T>(items: readonly T[], formatItem: (item: T) => str
 }
 
 async function findIssueByFingerprint(scratchDir: string, fingerprint: string): Promise<string | undefined> {
-  const markdownFiles = await listMarkdownFiles(scratchDir);
+  const markdownFiles = await listScratchMarkdownFiles(scratchDir);
   for (const filePath of markdownFiles) {
     const markdown = await readFile(filePath, 'utf8');
     if (markdown.includes(`qaFailureFingerprint: ${fingerprint}`) || markdown.includes(`QA-Failure-Fingerprint: ${fingerprint}`)) {
@@ -183,22 +184,4 @@ async function findIssueByFingerprint(scratchDir: string, fingerprint: string): 
     }
   }
   return undefined;
-}
-
-async function listMarkdownFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) return listMarkdownFiles(path);
-      if (entry.isFile() && entry.name.endsWith('.md')) return [path];
-      return [];
-    })
-  );
-  return files.flat();
-}
-
-function sanitizePathSegment(value: string): string {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  return normalized.length > 0 ? normalized : 'issue';
 }

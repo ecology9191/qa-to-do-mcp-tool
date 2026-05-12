@@ -1,7 +1,7 @@
-import { readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { qaSessionSchemaVersion, type QaSessionPayload, type SourceEvidence } from './qaSession';
 import type { RepoContext } from './beadsQa';
+import { listScratchMarkdownFiles, sanitizeScratchPathSegment } from './scratchFiles';
 
 export interface ScratchIssue {
   readonly id: string;
@@ -28,13 +28,8 @@ export class NoCompletedScratchSourceWorkError extends Error {
   }
 }
 
-interface CompletedScratchChildWork {
-  readonly issue: ScratchIssue;
-  readonly acceptanceNotes: readonly string[];
-}
-
 export async function readScratchIssues(scratchDir: string): Promise<ScratchIssue[]> {
-  const markdownFiles = (await listMarkdownFiles(scratchDir)).sort();
+  const markdownFiles = (await listScratchMarkdownFiles(scratchDir)).sort();
   const issues: ScratchIssue[] = [];
 
   for (const filePath of markdownFiles) {
@@ -80,7 +75,7 @@ export function createScratchQaSessionFromParent(
       : `The completed behavior for ${child.title} is visible and usable by a human reviewer.`;
 
     return {
-      id: `scratch-${sanitizeId(child.id)}`,
+      id: `scratch-${sanitizeScratchPathSegment(child.id)}`,
       title: `Verify ${child.title}`,
       steps: [
         `Open the application area affected by .scratch issue ${child.id}.`,
@@ -124,19 +119,6 @@ export function createScratchQaSessionFromParent(
     warnings: [...incompleteWarning, ...lowConfidenceWarnings],
     items
   };
-}
-
-async function listMarkdownFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files = await Promise.all(
-    entries.map(async (entry) => {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) return listMarkdownFiles(path);
-      if (entry.isFile() && entry.name.endsWith('.md')) return [path];
-      return [];
-    })
-  );
-  return files.flat();
 }
 
 function parseScratchIssueMarkdown(filePath: string, markdown: string): ScratchIssue {
@@ -226,9 +208,4 @@ function createSourceEvidence(issue: ScratchIssue, acceptanceNotes: readonly str
   }
 
   return evidence;
-}
-
-function sanitizeId(value: string): string {
-  const normalized = value.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-  return normalized.length > 0 ? normalized : 'issue';
 }
