@@ -36,8 +36,10 @@ export interface ActiveQaItem {
 
 export type QaItemStatus = 'pending' | 'passed' | 'failed' | 'skipped';
 
+type QaItemHistoryAction = 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited';
+
 export interface QaItemHistoryEvent {
-  readonly action: 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited';
+  readonly action: QaItemHistoryAction;
   readonly createdAt: string;
   readonly detail?: string;
 }
@@ -162,36 +164,26 @@ export class QaStorageRepository {
   }
 
   togglePassItem(sessionId: string, itemId: string, createdAt = new Date().toISOString()): void {
-    const status = this.#getItemStatus(sessionId, itemId);
+    const status = this.#ensureItemExists(sessionId, itemId).status;
     const nextStatus: QaItemStatus = status === 'passed' ? 'pending' : 'passed';
-    const action: QaItemHistoryEvent['action'] = status === 'passed' ? 'unpassed' : 'passed';
+    const action: QaItemHistoryAction = status === 'passed' ? 'unpassed' : 'passed';
 
-    this.#database.exec('BEGIN');
-    try {
+    this.#runInTransaction(() => {
       this.#database
         .prepare(`UPDATE qa_items SET status = ?, skip_reason = NULL WHERE session_id = ? AND id = ?`)
         .run(nextStatus, sessionId, itemId);
       this.#recordHistory(sessionId, itemId, action, undefined, createdAt);
-      this.#database.exec('COMMIT');
-    } catch (error) {
-      this.#database.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   failItem(sessionId: string, itemId: string, createdAt = new Date().toISOString()): void {
     this.#ensureItemExists(sessionId, itemId);
-    this.#database.exec('BEGIN');
-    try {
+    this.#runInTransaction(() => {
       this.#database
         .prepare(`UPDATE qa_items SET status = ?, skip_reason = NULL WHERE session_id = ? AND id = ?`)
         .run('failed', sessionId, itemId);
       this.#recordHistory(sessionId, itemId, 'failed', undefined, createdAt);
-      this.#database.exec('COMMIT');
-    } catch (error) {
-      this.#database.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   skipItem(sessionId: string, itemId: string, reason: string, createdAt = new Date().toISOString()): void {
@@ -201,41 +193,40 @@ export class QaStorageRepository {
     }
 
     this.#ensureItemExists(sessionId, itemId);
-    this.#database.exec('BEGIN');
-    try {
+    this.#runInTransaction(() => {
       this.#database
         .prepare(`UPDATE qa_items SET status = ?, skip_reason = ? WHERE session_id = ? AND id = ?`)
         .run('skipped', normalizedReason, sessionId, itemId);
       this.#recordHistory(sessionId, itemId, 'skipped', normalizedReason, createdAt);
-      this.#database.exec('COMMIT');
-    } catch (error) {
-      this.#database.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
 
   editItem(sessionId: string, itemId: string, edit: QaItemEdit, createdAt = new Date().toISOString()): void {
-    if (edit.title.trim().length === 0 || edit.expectedResult.trim().length === 0 || edit.steps.length === 0) {
+    const title = edit.title.trim();
+    const steps = edit.steps.map((step) => step.trim());
+    const expectedResult = edit.expectedResult.trim();
+    const note = edit.note?.trim();
+
+    if (title.length === 0 || expectedResult.length === 0 || steps.length === 0) {
       throw new Error('Edited QA items require title, steps, and expected result.');
     }
-    if (edit.steps.some((step) => step.trim().length === 0)) {
+    if (steps.some((step) => step.length === 0)) {
       throw new Error('Edited QA item steps cannot be blank.');
     }
 
     this.#ensureItemExists(sessionId, itemId);
-    this.#database.exec('BEGIN');
-    try {
+    this.#runInTransaction(() => {
       this.#database
         .prepare(`UPDATE qa_items SET title = ?, steps_json = ?, expected_result = ?, note = ? WHERE session_id = ? AND id = ?`)
-        .run(
-          edit.title.trim(),
-          JSON.stringify(edit.steps.map((step) => step.trim())),
-          edit.expectedResult.trim(),
-          edit.note?.trim() || null,
-          sessionId,
-          itemId
-        );
-      this.#recordHistory(sessionId, itemId, 'edited', edit.note?.trim() || 'Generated text edited', createdAt);
+        .run(title, JSON.stringify(steps), expectedResult, note || null, sessionId, itemId);
+      this.#recordHistory(sessionId, itemId, 'edited', note || 'Generated text edited', createdAt);
+    });
+  }
+
+  #runInTransaction(action: () => void): void {
+    this.#database.exec('BEGIN');
+    try {
+      action();
       this.#database.exec('COMMIT');
     } catch (error) {
       this.#database.exec('ROLLBACK');
@@ -273,10 +264,6 @@ export class QaStorageRepository {
     };
   }
 
-  #getItemStatus(sessionId: string, itemId: string): QaItemStatus {
-    return this.#ensureItemExists(sessionId, itemId).status;
-  }
-
   #ensureItemExists(sessionId: string, itemId: string): { readonly status: QaItemStatus } {
     const row = this.#database
       .prepare(`SELECT status FROM qa_items WHERE session_id = ? AND id = ?`)
@@ -292,7 +279,7 @@ export class QaStorageRepository {
   #recordHistory(
     sessionId: string,
     itemId: string,
-    action: QaItemHistoryEvent['action'],
+    action: QaItemHistoryAction,
     detail: string | undefined,
     createdAt: string
   ): void {
@@ -346,11 +333,17 @@ function toQaItemStatus(value: string): QaItemStatus {
   return 'pending';
 }
 
-function toHistoryAction(value: string): QaItemHistoryEvent['action'] {
-  if (value === 'passed' || value === 'unpassed' || value === 'failed' || value === 'skipped' || value === 'edited') {
-    return value;
+function toHistoryAction(value: string): QaItemHistoryAction {
+  switch (value) {
+    case 'passed':
+    case 'unpassed':
+    case 'failed':
+    case 'skipped':
+    case 'edited':
+      return value;
+    default:
+      throw new Error(`Unknown QA item history action: ${value}`);
   }
-  throw new Error(`Unknown QA item history action: ${value}`);
 }
 
 function createSessionId(payload: QaSessionPayload): string {

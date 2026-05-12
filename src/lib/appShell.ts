@@ -21,6 +21,8 @@ export interface QaSessionSummary {
 
 export type QaChecklistStatus = 'pending' | 'passed' | 'failed' | 'skipped';
 
+export type QaChecklistHistoryAction = 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited';
+
 export interface QaChecklistItem {
   id: string;
   title: string;
@@ -40,7 +42,7 @@ export interface QaChecklistItem {
 }
 
 export interface QaChecklistHistoryEvent {
-  action: string;
+  action: QaChecklistHistoryAction;
   createdAt: string;
   detail?: string;
 }

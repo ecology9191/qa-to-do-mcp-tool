@@ -4,6 +4,8 @@
     emptyStateCommand,
     type AppShellState,
     type HealthState,
+    type QaChecklistHistoryAction,
+    type QaChecklistHistoryEvent,
     type QaChecklistItem,
     type QaChecklistStatus
   } from './lib/appShell';
@@ -11,6 +13,8 @@
   interface AppProps {
     readonly initialState?: AppShellState;
   }
+
+  type ChecklistFilterStatus = 'all' | QaChecklistStatus;
 
   let { initialState = createInitialShellState() }: AppProps = $props();
   let shellState: AppShellState = $state(createInitialShellState());
@@ -21,7 +25,7 @@
   let skipItemId: string | undefined = $state();
   let historyItemId: string | undefined = $state();
   let searchQuery = $state('');
-  let statusFilter: 'all' | QaChecklistStatus = $state('all');
+  let statusFilter: ChecklistFilterStatus = $state('all');
   let sourceFilter = $state('all');
   let editTitle = $state('');
   let editSteps = $state('');
@@ -33,7 +37,7 @@
     'needs-setup': 'Needs setup',
     unknown: 'Not checked'
   };
-  const sourceIssueOptions = $derived([...new Set((activeSession?.items ?? []).map((item: QaChecklistItem) => item.sourceIssueId))]);
+  const sourceIssueOptions = $derived([...new Set((activeSession?.items ?? []).map((item) => item.sourceIssueId))]);
   const filteredItems = $derived((activeSession?.items ?? []).filter(matchesFilters));
 
   $effect.pre(() => {
@@ -73,18 +77,18 @@
   function togglePass(item: QaChecklistItem): void {
     if (item.status === 'passed') {
       item.status = 'pending';
-      item.history = [...item.history, historyEvent('unpassed')];
+      recordHistory(item, 'unpassed');
       return;
     }
     item.status = 'passed';
     item.skipReason = undefined;
-    item.history = [...item.history, historyEvent('passed')];
+    recordHistory(item, 'passed');
   }
 
   function failItem(item: QaChecklistItem): void {
     item.status = 'failed';
     item.skipReason = undefined;
-    item.history = [...item.history, historyEvent('failed')];
+    recordHistory(item, 'failed');
   }
 
   function startSkip(item: QaChecklistItem): void {
@@ -98,7 +102,7 @@
     if (reason.length === 0) return;
     item.status = 'skipped';
     item.skipReason = reason;
-    item.history = [...item.history, historyEvent('skipped', reason)];
+    recordHistory(item, 'skipped', reason);
     skipItemId = undefined;
     skipReason = '';
   }
@@ -123,7 +127,7 @@
     item.steps = steps;
     item.expectedResult = editExpectedResult.trim();
     item.note = editNote.trim() || undefined;
-    item.history = [...item.history, historyEvent('edited', item.note ?? 'Generated text edited')];
+    recordHistory(item, 'edited', item.note ?? 'Generated text edited');
     editingItemId = undefined;
   }
 
@@ -142,33 +146,43 @@
     const item = selectedItem();
     if (!item) return;
 
-    if (event.key === 'j') {
-      event.preventDefault();
-      moveSelection(1);
-    } else if (event.key === 'k') {
-      event.preventDefault();
-      moveSelection(-1);
-    } else if (event.key === ' ') {
-      event.preventDefault();
-      togglePass(item);
-    } else if (event.key === 'f') {
-      event.preventDefault();
-      failItem(item);
-    } else if (event.key === 's') {
-      event.preventDefault();
-      startSkip(item);
-    } else if (event.key === 'e') {
-      event.preventDefault();
-      startEdit(item);
-    } else if (event.key === '/') {
-      event.preventDefault();
-      document.getElementById('checklist-search')?.focus();
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      toggleExpanded(item);
-    } else if (event.key === 'a') {
-      event.preventDefault();
-      expandedItemId = undefined;
+    switch (event.key) {
+      case 'j':
+        event.preventDefault();
+        moveSelection(1);
+        break;
+      case 'k':
+        event.preventDefault();
+        moveSelection(-1);
+        break;
+      case ' ':
+        event.preventDefault();
+        togglePass(item);
+        break;
+      case 'f':
+        event.preventDefault();
+        failItem(item);
+        break;
+      case 's':
+        event.preventDefault();
+        startSkip(item);
+        break;
+      case 'e':
+        event.preventDefault();
+        startEdit(item);
+        break;
+      case '/':
+        event.preventDefault();
+        document.getElementById('checklist-search')?.focus();
+        break;
+      case 'Enter':
+        event.preventDefault();
+        toggleExpanded(item);
+        break;
+      case 'a':
+        event.preventDefault();
+        expandedItemId = undefined;
+        break;
     }
   }
 
@@ -177,11 +191,15 @@
     return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
   }
 
-  function historyEvent(action: string, detail?: string): { action: string; createdAt: string; detail?: string } {
+  function recordHistory(item: QaChecklistItem, action: QaChecklistHistoryAction, detail?: string): void {
+    item.history = [...item.history, historyEvent(action, detail)];
+  }
+
+  function historyEvent(action: QaChecklistHistoryAction, detail?: string): QaChecklistHistoryEvent {
     return { action, createdAt: new Date().toISOString(), ...(detail ? { detail } : {}) };
   }
 
-  function formatHistory(event: { action: string; detail?: string }): string {
+  function formatHistory(event: QaChecklistHistoryEvent): string {
     const label = `${event.action.charAt(0).toUpperCase()}${event.action.slice(1)}`;
     return event.detail ? `${label}: ${event.detail}` : label;
   }
