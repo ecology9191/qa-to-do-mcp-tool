@@ -8,20 +8,29 @@ export interface ConfigHealthItem {
 }
 
 export interface QaSessionSummary {
-  readonly id: string;
-  readonly title: string;
-  readonly repoName: string;
-  readonly parentIssueId: string;
-  readonly parentIssueTitle: string;
-  readonly tracker: 'beads';
-  readonly warnings: readonly string[];
-  readonly itemCount: number;
-  readonly items?: readonly QaChecklistItem[];
+  id: string;
+  title: string;
+  repoName: string;
+  parentIssueId: string;
+  parentIssueTitle: string;
+  tracker: 'beads';
+  warnings: string[];
+  itemCount: number;
+  deletedAt?: string;
+  items?: QaChecklistItem[];
 }
 
 export type QaChecklistStatus = 'pending' | 'passed' | 'failed' | 'skipped';
 
-export type QaChecklistHistoryAction = 'passed' | 'unpassed' | 'failed' | 'skipped' | 'edited';
+export type QaChecklistHistoryAction =
+  | 'manual-added'
+  | 'passed'
+  | 'unpassed'
+  | 'failed'
+  | 'skipped'
+  | 'edited'
+  | 'soft-deleted'
+  | 'restored';
 
 export interface QaChecklistItem {
   id: string;
@@ -32,12 +41,14 @@ export interface QaChecklistItem {
   expectedResult: string;
   originalExpectedResult: string;
   sourceIssueId: string;
+  sourceType?: 'generated' | 'manual';
   confidence: 'normal' | 'low';
   warnings: string[];
   sourceEvidence: SourceEvidence[];
   status: QaChecklistStatus;
   skipReason?: string;
   note?: string;
+  deletedAt?: string;
   failureEvidence?: FailureEvidence;
   history: QaChecklistHistoryEvent[];
 }
