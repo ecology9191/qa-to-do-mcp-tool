@@ -1,8 +1,18 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
+import { afterEach, beforeEach, vi } from 'vitest';
 import App from './App.svelte';
 import { createShellStateFromActiveSession } from './lib/appShell';
 
 describe('App shell', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it('shows the empty QA session workflow before any sessions exist', () => {
     render(App);
 
@@ -127,7 +137,77 @@ describe('App shell', () => {
     expect(screen.getByText(/Failed: The login flow stays on the callback screen./i)).toBeInTheDocument();
     expect(screen.getByText(/Screenshots: callback.png/i)).toBeInTheDocument();
   });
+
+  it('plays a generated pass chime with locally persisted mute and volume controls', async () => {
+    const audio = installAudioContextStub();
+
+    render(App, { props: { initialState: createChecklistState() } });
+
+    expect(screen.getByRole('heading', { name: 'Pass chime' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Pass chime volume')).toHaveValue('35');
+
+    await fireEvent.input(screen.getByLabelText('Pass chime volume'), { target: { value: '60' } });
+    expect(localStorage.getItem('qa-to-do.interaction-settings')).toContain('"passChimeVolume":0.6');
+
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
+    expect(audio.oscillatorStart).toHaveBeenCalledTimes(1);
+    expect(audio.gainSetValueAtTime).toHaveBeenCalledWith(0.6, 10);
+
+    await fireEvent.click(screen.getByLabelText('Mute pass chime'));
+    expect(localStorage.getItem('qa-to-do.interaction-settings')).toContain('"passChimeMuted":true');
+
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
+    expect(audio.oscillatorStart).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(screen.getByRole('button', { name: /history Verify login redirect/i }));
+    expect(screen.getAllByText('Passed').length).toBeGreaterThan(1);
+    expect(screen.getByText('Unpassed')).toBeInTheDocument();
+    expect(screen.queryByText(/Pass chime/i, { selector: 'li' })).not.toBeInTheDocument();
+  });
 });
+
+function installAudioContextStub() {
+  const frequencySetValueAtTime = vi.fn();
+  const gainSetValueAtTime = vi.fn();
+  const gainRamp = vi.fn();
+  const oscillatorStart = vi.fn();
+  const oscillatorStop = vi.fn();
+
+  const oscillator = {
+    type: 'sine',
+    frequency: { setValueAtTime: frequencySetValueAtTime },
+    connect: vi.fn(),
+    start: oscillatorStart,
+    stop: oscillatorStop
+  };
+
+  const gain = {
+    gain: {
+      setValueAtTime: gainSetValueAtTime,
+      exponentialRampToValueAtTime: gainRamp
+    },
+    connect: vi.fn()
+  };
+
+  class FakeAudioContext {
+    currentTime = 10;
+    destination = {};
+
+    createOscillator() {
+      return oscillator;
+    }
+
+    createGain() {
+      return gain;
+    }
+  }
+
+  vi.stubGlobal('AudioContext', FakeAudioContext);
+  vi.stubGlobal('webkitAudioContext', FakeAudioContext);
+
+  return { oscillatorStart, gainSetValueAtTime };
+}
 
 function createChecklistState() {
   return createShellStateFromActiveSession({
