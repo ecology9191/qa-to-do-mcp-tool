@@ -92,24 +92,39 @@
   function failItem(item: QaChecklistItem): void {
     item.status = 'failed';
     item.skipReason = undefined;
+    openFailureComposer(item);
+    recordHistory(item, 'failed');
+  }
+
+  function openFailureComposer(item: QaChecklistItem): void {
     failureComposerItemId = item.id;
     failureActualBehavior = item.failureEvidence?.actualBehavior ?? '';
     failureScreenshots = [...(item.failureEvidence?.screenshots ?? [])];
     expandedItemId = item.id;
-    recordHistory(item, 'failed');
   }
 
   function attachScreenshotFiles(files: FileList | null): void {
-    if (!files) return;
+    if (!files || files.length === 0) return;
+
     const screenshots = Array.from(files)
-      .filter((file) => file.type.startsWith('image/'))
-      .map((file) => ({
-        name: file.name,
-        mimeType: file.type,
-        sizeBytes: file.size,
-        localReference: `pending-local-copy:${file.name}`
-      }));
+      .filter(isImageFile)
+      .map(toPendingFailureScreenshot);
+
+    if (screenshots.length === 0) return;
     failureScreenshots = [...failureScreenshots, ...screenshots];
+  }
+
+  function isImageFile(file: File): boolean {
+    return file.type.startsWith('image/');
+  }
+
+  function toPendingFailureScreenshot(file: File): FailureScreenshot {
+    return {
+      name: file.name,
+      mimeType: file.type,
+      sizeBytes: file.size,
+      localReference: `pending-local-copy:${file.name}`
+    };
   }
 
   function handleFailurePaste(event: ClipboardEvent): void {
@@ -126,6 +141,10 @@
     };
     item.note = actualBehavior;
     recordHistory(item, 'failed', actualBehavior);
+    resetFailureComposer();
+  }
+
+  function resetFailureComposer(): void {
     failureComposerItemId = undefined;
     failureActualBehavior = '';
     failureScreenshots = [];

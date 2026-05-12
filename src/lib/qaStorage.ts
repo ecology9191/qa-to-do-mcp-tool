@@ -70,6 +70,12 @@ export interface FailureScreenshot {
   readonly capturedAt: string;
 }
 
+interface ScreenshotStorageLocation {
+  readonly targetDirectory: string;
+  readonly localPath: string;
+  readonly localReference: string;
+}
+
 export class QaStorageRepository {
   readonly #database: DatabaseSync;
   readonly #storageRoot: string;
@@ -270,17 +276,13 @@ export class QaStorageRepository {
       throw new Error('Failure screenshots must be image files.');
     }
 
-    const originalName = screenshot.originalName?.trim() || basename(screenshot.sourcePath);
-    const screenshotId = `screenshot-${Buffer.from(`${sessionId}:${itemId}:${capturedAt}:${originalName}`).toString('base64url').slice(0, 32)}`;
-    const relativeDirectory = join('screenshots', sanitizePathSegment(sessionId), sanitizePathSegment(itemId));
-    const targetDirectory = join(this.#storageRoot, relativeDirectory);
-    const targetName = `${sanitizePathSegment(capturedAt)}-${sanitizePathSegment(originalName)}`;
-    const localPath = join(targetDirectory, targetName);
-    const localReference = `app-storage://${join(relativeDirectory, targetName)}`;
+    const originalName = normalizedScreenshotName(screenshot);
+    const screenshotId = createScreenshotId(sessionId, itemId, capturedAt, originalName);
+    const storageLocation = createScreenshotStorageLocation(this.#storageRoot, sessionId, itemId, capturedAt, originalName);
 
-    mkdirSync(targetDirectory, { recursive: true });
-    copyFileSync(screenshot.sourcePath, localPath);
-    const sizeBytes = statSync(localPath).size;
+    mkdirSync(storageLocation.targetDirectory, { recursive: true });
+    copyFileSync(screenshot.sourcePath, storageLocation.localPath);
+    const sizeBytes = statSync(storageLocation.localPath).size;
 
     this.#database
       .prepare(`
@@ -288,15 +290,25 @@ export class QaStorageRepository {
           id, item_id, session_id, original_name, mime_type, size_bytes, local_path, local_reference, captured_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(screenshotId, itemId, sessionId, originalName, screenshot.mimeType, sizeBytes, localPath, localReference, capturedAt);
+      .run(
+        screenshotId,
+        itemId,
+        sessionId,
+        originalName,
+        screenshot.mimeType,
+        sizeBytes,
+        storageLocation.localPath,
+        storageLocation.localReference,
+        capturedAt
+      );
 
     return {
       id: screenshotId,
       originalName,
       mimeType: screenshot.mimeType,
       sizeBytes,
-      localPath,
-      localReference,
+      localPath: storageLocation.localPath,
+      localReference: storageLocation.localReference,
       capturedAt
     };
   }
@@ -338,7 +350,9 @@ export class QaStorageRepository {
       generatedAt: session.generated_at,
       warnings: parseJson<string[]>(session.warnings_json),
       sourceEvidence: parseJson<SourceEvidence[]>(session.source_evidence_json),
-      items: itemRows.map((item) => toActiveItem(item, this.#getItemHistory(session.id, item.id), this.#getItemScreenshots(session.id, item.id)))
+      items: itemRows.map((item) =>
+        toActiveItem(item, this.#getItemHistory(session.id, item.id), this.#getItemScreenshots(session.id, item.id))
+      )
     };
   }
 
@@ -383,15 +397,7 @@ export class QaStorageRepository {
       .prepare(`SELECT * FROM qa_item_screenshots WHERE session_id = ? AND item_id = ? ORDER BY captured_at ASC`)
       .all(sessionId, itemId) as unknown as ScreenshotRow[];
 
-    return rows.map((row) => ({
-      id: row.id,
-      originalName: row.original_name,
-      mimeType: row.mime_type,
-      sizeBytes: row.size_bytes,
-      localPath: row.local_path,
-      localReference: row.local_reference,
-      capturedAt: row.captured_at
-    }));
+    return rows.map(toFailureScreenshot);
   }
 
   close(): void {
@@ -452,6 +458,43 @@ function createSessionId(payload: QaSessionPayload): string {
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
+}
+
+function normalizedScreenshotName(screenshot: FailureScreenshotInput): string {
+  return screenshot.originalName?.trim() || basename(screenshot.sourcePath);
+}
+
+function createScreenshotId(sessionId: string, itemId: string, capturedAt: string, originalName: string): string {
+  return `screenshot-${Buffer.from(`${sessionId}:${itemId}:${capturedAt}:${originalName}`).toString('base64url').slice(0, 32)}`;
+}
+
+function createScreenshotStorageLocation(
+  storageRoot: string,
+  sessionId: string,
+  itemId: string,
+  capturedAt: string,
+  originalName: string
+): ScreenshotStorageLocation {
+  const relativeDirectory = join('screenshots', sanitizePathSegment(sessionId), sanitizePathSegment(itemId));
+  const targetName = `${sanitizePathSegment(capturedAt)}-${sanitizePathSegment(originalName)}`;
+
+  return {
+    targetDirectory: join(storageRoot, relativeDirectory),
+    localPath: join(storageRoot, relativeDirectory, targetName),
+    localReference: `app-storage://${join(relativeDirectory, targetName)}`
+  };
+}
+
+function toFailureScreenshot(row: ScreenshotRow): FailureScreenshot {
+  return {
+    id: row.id,
+    originalName: row.original_name,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    localPath: row.local_path,
+    localReference: row.local_reference,
+    capturedAt: row.captured_at
+  };
 }
 
 function sanitizePathSegment(value: string): string {
