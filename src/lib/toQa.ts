@@ -1,9 +1,9 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { createBeadsQaSessionFromParent, type BeadsIssue } from './beadsQa';
 import { importQaSessionInboxEntries, type InboxImportResult } from './inboxImporter';
 import { writeQaSessionInboxEntry } from './mcpInbox';
-import type { ActiveQaSession, QaStorageRepository } from './qaStorage';
+import type { ActiveQaSession, QaStorageRepository, QaTracker } from './qaStorage';
 import { createScratchQaSessionFromParent, readScratchIssues } from './scratchQa';
 
 export interface ToQaBeadsOptions {
@@ -39,6 +39,46 @@ export interface ToQaScratchOptions {
 }
 
 export type ToQaScratchResult = ToQaBeadsResult;
+
+export interface TrackerChoiceRequest {
+  readonly repoPath: string;
+  readonly detectedTrackers: readonly QaTracker[];
+}
+
+export interface ToQaOptions extends Omit<ToQaBeadsOptions, 'beadsIssuesPath'> {
+  readonly beadsIssuesPath?: string;
+  readonly scratchDir?: string;
+  readonly chooseTracker?: (request: TrackerChoiceRequest) => QaTracker | Promise<QaTracker>;
+}
+
+export type ToQaResult = ToQaBeadsResult;
+
+export class TrackerChoiceRequiredError extends Error {
+  constructor(repoPath: string, detectedTrackers: readonly QaTracker[]) {
+    super(
+      `Multiple supported trackers were detected in ${repoPath}: ${detectedTrackers.join(', ')}. Choose which tracker /to-qa should use for this repo.`
+    );
+    this.name = 'TrackerChoiceRequiredError';
+  }
+}
+
+export class NoSupportedTrackerDetectedError extends Error {
+  constructor(repoPath: string) {
+    super(`No supported tracker was detected in ${repoPath}. Expected Beads .beads/issues.jsonl or structured .scratch markdown.`);
+    this.name = 'NoSupportedTrackerDetectedError';
+  }
+}
+
+export async function runToQaForParent(options: ToQaOptions): Promise<ToQaResult> {
+  const detectedTrackers = await detectSupportedTrackers(options);
+  const tracker = await chooseRepoTracker(options, detectedTrackers);
+
+  if (tracker === 'scratch') {
+    return runToQaForScratchParent(options);
+  }
+
+  return runToQaForBeadsParent(options);
+}
 
 export async function runToQaForBeadsParent(options: ToQaBeadsOptions): Promise<ToQaBeadsResult> {
   const issues = await readBeadsIssues(options.beadsIssuesPath ?? join(options.repoPath, '.beads', 'issues.jsonl'));
@@ -105,4 +145,59 @@ async function readBeadsIssues(path: string): Promise<BeadsIssue[]> {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as BeadsIssue);
+}
+
+async function detectSupportedTrackers(options: ToQaOptions): Promise<QaTracker[]> {
+  const detectedTrackers: QaTracker[] = [];
+  if (await pathExists(options.beadsIssuesPath ?? join(options.repoPath, '.beads', 'issues.jsonl'))) {
+    detectedTrackers.push('beads');
+  }
+  if (await pathExists(options.scratchDir ?? join(options.repoPath, '.scratch'))) {
+    detectedTrackers.push('scratch');
+  }
+  return detectedTrackers;
+}
+
+async function chooseRepoTracker(options: ToQaOptions, detectedTrackers: readonly QaTracker[]): Promise<QaTracker> {
+  if (detectedTrackers.length === 0) {
+    throw new NoSupportedTrackerDetectedError(options.repoPath);
+  }
+
+  const rememberedTracker = options.repository.getRepoTrackerPreference(options.repoPath);
+  if (rememberedTracker && detectedTrackers.includes(rememberedTracker)) {
+    return rememberedTracker;
+  }
+
+  if (detectedTrackers.length === 1) {
+    const tracker = detectedTrackers[0];
+    options.repository.setRepoTrackerPreference(options.repoPath, tracker);
+    return tracker;
+  }
+
+  if (!options.chooseTracker) {
+    throw new TrackerChoiceRequiredError(options.repoPath, detectedTrackers);
+  }
+
+  const tracker = await options.chooseTracker({ repoPath: options.repoPath, detectedTrackers });
+  if (!detectedTrackers.includes(tracker)) {
+    throw new Error(`Selected tracker ${tracker} was not detected in ${options.repoPath}.`);
+  }
+  options.repository.setRepoTrackerPreference(options.repoPath, tracker);
+  return tracker;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
 }

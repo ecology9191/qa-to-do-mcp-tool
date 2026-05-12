@@ -167,6 +167,12 @@ export class QaStorageRepository {
         local_reference TEXT NOT NULL,
         captured_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS repo_tracker_preferences (
+        repo_path TEXT PRIMARY KEY,
+        tracker TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
     this.#ensureColumn('qa_sessions', 'archived_at', 'TEXT');
     this.#ensureColumn('qa_sessions', 'deleted_at', 'TEXT');
@@ -459,6 +465,29 @@ export class QaStorageRepository {
     }
 
     return sessions.filter((session) => archivedSessionMatches(session, normalizedQuery));
+  }
+
+  getRepoTrackerPreference(repoPath: string): QaTracker | undefined {
+    const row = this.#database
+      .prepare(`SELECT tracker FROM repo_tracker_preferences WHERE repo_path = ?`)
+      .get(repoPath) as unknown as { readonly tracker: string } | undefined;
+
+    return row ? toQaTracker(row.tracker) : undefined;
+  }
+
+  setRepoTrackerPreference(repoPath: string, tracker: QaTracker, updatedAt = new Date().toISOString()): void {
+    const normalizedRepoPath = repoPath.trim();
+    if (normalizedRepoPath.length === 0) {
+      throw new Error('Repo tracker preference requires a repo path.');
+    }
+
+    this.#database
+      .prepare(
+        `INSERT INTO repo_tracker_preferences (repo_path, tracker, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(repo_path) DO UPDATE SET tracker = excluded.tracker, updated_at = excluded.updated_at`
+      )
+      .run(normalizedRepoPath, tracker, updatedAt);
   }
 
   #runInTransaction(action: () => void): void {
