@@ -1,4 +1,5 @@
 import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { basename, join } from 'node:path';
 import type { QaSessionPayload, SourceEvidence } from './qaSession';
@@ -7,6 +8,7 @@ export type QaTracker = 'beads' | 'scratch';
 
 export interface ActiveQaSession {
   readonly id: string;
+  readonly version: number;
   readonly title: string;
   readonly repoName: string;
   readonly repoPath: string;
@@ -18,6 +20,54 @@ export interface ActiveQaSession {
   readonly warnings: readonly string[];
   readonly sourceEvidence: readonly SourceEvidence[];
   readonly items: readonly ActiveQaItem[];
+}
+
+export interface QaStorageExport {
+  readonly schemaVersion: 1;
+  readonly exportedAt: string;
+  readonly sessions: readonly QaStorageExportSession[];
+}
+
+export interface QaStorageExportSession {
+  readonly id: string;
+  readonly version: number;
+  readonly title: string;
+  readonly tracker: QaTracker;
+  readonly repoName: string;
+  readonly repoPath: string;
+  readonly parentIssueId: string;
+  readonly parentIssueTitle: string;
+  readonly parentIssueStatus: string;
+  readonly generatedAt: string;
+  readonly importedAt: string;
+  readonly warnings: readonly string[];
+  readonly sourceEvidence: readonly SourceEvidence[];
+  readonly rawPayload: QaSessionPayload;
+  readonly archivedAt?: string;
+  readonly deletedAt?: string;
+  readonly items: readonly QaStorageExportItem[];
+}
+
+export interface QaStorageExportItem {
+  readonly id: string;
+  readonly title: string;
+  readonly originalTitle: string;
+  readonly steps: readonly string[];
+  readonly originalSteps: readonly string[];
+  readonly expectedResult: string;
+  readonly originalExpectedResult: string;
+  readonly fingerprint: string;
+  readonly sourceIssueId: string;
+  readonly sourceType: 'generated' | 'manual';
+  readonly confidence: 'normal' | 'low';
+  readonly warnings: readonly string[];
+  readonly sourceEvidence: readonly SourceEvidence[];
+  readonly status: QaItemStatus;
+  readonly skipReason?: string;
+  readonly note?: string;
+  readonly deletedAt?: string;
+  readonly history: readonly QaItemHistoryEvent[];
+  readonly screenshots: readonly FailureScreenshot[];
 }
 
 export interface ActiveQaItem {
@@ -117,6 +167,7 @@ export class QaStorageRepository {
         parent_issue_id TEXT NOT NULL,
         parent_issue_title TEXT NOT NULL,
         parent_issue_status TEXT NOT NULL,
+        session_version INTEGER NOT NULL DEFAULT 1,
         generated_at TEXT NOT NULL,
         imported_at TEXT NOT NULL,
         warnings_json TEXT NOT NULL,
@@ -135,7 +186,7 @@ export class QaStorageRepository {
         original_steps_json TEXT NOT NULL,
         expected_result TEXT NOT NULL,
         original_expected_result TEXT NOT NULL,
-        fingerprint TEXT NOT NULL UNIQUE,
+        fingerprint TEXT NOT NULL,
         source_issue_id TEXT NOT NULL,
         source_type TEXT NOT NULL DEFAULT 'generated',
         confidence TEXT NOT NULL,
@@ -176,46 +227,74 @@ export class QaStorageRepository {
     `);
     this.#ensureColumn('qa_sessions', 'archived_at', 'TEXT');
     this.#ensureColumn('qa_sessions', 'deleted_at', 'TEXT');
+    this.#ensureColumn('qa_sessions', 'session_version', 'INTEGER NOT NULL DEFAULT 1');
     this.#ensureColumn('qa_items', 'source_type', `TEXT NOT NULL DEFAULT 'generated'`);
     this.#ensureColumn('qa_items', 'deleted_at', 'TEXT');
   }
 
   importSession(payload: QaSessionPayload, importedAt = new Date().toISOString()): string {
-    const sessionId = createSessionId(payload);
+    const activeSession = this.#findActiveSession(payload);
+    const sessionVersion = activeSession?.session_version ?? this.#nextSessionVersion(payload);
+    const sessionId = activeSession?.id ?? createSessionId(payload, sessionVersion);
     const insertSession = this.#database.prepare(`
-      INSERT OR REPLACE INTO qa_sessions (
+      INSERT INTO qa_sessions (
         id, title, tracker, repo_name, repo_path, parent_issue_id, parent_issue_title, parent_issue_status,
-        generated_at, imported_at, warnings_json, source_evidence_json, raw_payload_json, archived_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+        session_version, generated_at, imported_at, warnings_json, source_evidence_json, raw_payload_json, archived_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+    `);
+    const updateSession = this.#database.prepare(`
+      UPDATE qa_sessions
+      SET title = ?, parent_issue_title = ?, parent_issue_status = ?, generated_at = ?, imported_at = ?,
+        warnings_json = ?, source_evidence_json = ?, raw_payload_json = ?
+      WHERE id = ?
     `);
     const insertItem = this.#database.prepare(`
-      INSERT OR IGNORE INTO qa_items (
+      INSERT INTO qa_items (
         id, session_id, title, original_title, steps_json, original_steps_json, expected_result, original_expected_result,
         fingerprint, source_issue_id, source_type, confidence, warnings_json, source_evidence_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    this.#database.exec('BEGIN');
-    try {
-      insertSession.run(
-        sessionId,
-        payload.title,
-        payload.source.tracker,
-        payload.source.repo.name,
-        payload.source.repo.path,
-        payload.source.parentIssue.id,
-        payload.source.parentIssue.title,
-        payload.source.parentIssue.status,
-        payload.generatedAt,
-        importedAt,
-        JSON.stringify(payload.warnings),
-        JSON.stringify(payload.source.sessionEvidence),
-        JSON.stringify(payload)
-      );
+    this.#runInTransaction(() => {
+      if (activeSession) {
+        updateSession.run(
+          payload.title,
+          payload.source.parentIssue.title,
+          payload.source.parentIssue.status,
+          payload.generatedAt,
+          importedAt,
+          JSON.stringify(payload.warnings),
+          JSON.stringify(payload.source.sessionEvidence),
+          JSON.stringify(payload),
+          sessionId
+        );
+      } else {
+        insertSession.run(
+          sessionId,
+          payload.title,
+          payload.source.tracker,
+          payload.source.repo.name,
+          payload.source.repo.path,
+          payload.source.parentIssue.id,
+          payload.source.parentIssue.title,
+          payload.source.parentIssue.status,
+          sessionVersion,
+          payload.generatedAt,
+          importedAt,
+          JSON.stringify(payload.warnings),
+          JSON.stringify(payload.source.sessionEvidence),
+          JSON.stringify(payload)
+        );
+      }
 
       for (const item of payload.items) {
+        if (this.#sessionHasFingerprint(sessionId, item.fingerprint)) {
+          continue;
+        }
+
+        const itemId = this.#availableItemId(item.id, sessionId);
         insertItem.run(
-          item.id,
+          itemId,
           sessionId,
           item.title,
           item.title,
@@ -231,12 +310,111 @@ export class QaStorageRepository {
           JSON.stringify(item.sourceEvidence)
         );
       }
-      this.#database.exec('COMMIT');
-    } catch (error) {
-      this.#database.exec('ROLLBACK');
-      throw error;
-    }
+    });
     return sessionId;
+  }
+
+  exportData(exportedAt = new Date().toISOString()): QaStorageExport {
+    const sessions = this.#database
+      .prepare(`SELECT * FROM qa_sessions ORDER BY imported_at ASC, id ASC`)
+      .all() as unknown as SessionRow[];
+
+    return {
+      schemaVersion: 1,
+      exportedAt,
+      sessions: sessions.map((session) => this.#toExportSession(session))
+    };
+  }
+
+  importData(data: QaStorageExport): void {
+    if (!isStorageExport(data)) {
+      throw new Error('Unsupported QA storage export schema.');
+    }
+
+    this.#runInTransaction(() => {
+      for (const session of data.sessions) {
+        this.#database.prepare(`DELETE FROM qa_sessions WHERE id = ?`).run(session.id);
+        this.#database
+          .prepare(`
+            INSERT INTO qa_sessions (
+              id, title, tracker, repo_name, repo_path, parent_issue_id, parent_issue_title, parent_issue_status,
+              session_version, generated_at, imported_at, warnings_json, source_evidence_json, raw_payload_json, archived_at, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `)
+          .run(
+            session.id,
+            session.title,
+            session.tracker,
+            session.repoName,
+            session.repoPath,
+            session.parentIssueId,
+            session.parentIssueTitle,
+            session.parentIssueStatus,
+            session.version,
+            session.generatedAt,
+            session.importedAt,
+            JSON.stringify(session.warnings),
+            JSON.stringify(session.sourceEvidence),
+            JSON.stringify(session.rawPayload),
+            session.archivedAt ?? null,
+            session.deletedAt ?? null
+          );
+
+        for (const item of session.items) {
+          this.#database
+            .prepare(`
+              INSERT INTO qa_items (
+                id, session_id, title, original_title, steps_json, original_steps_json, expected_result, original_expected_result,
+                fingerprint, source_issue_id, source_type, confidence, warnings_json, source_evidence_json, status, skip_reason, note, deleted_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `)
+            .run(
+              item.id,
+              session.id,
+              item.title,
+              item.originalTitle,
+              JSON.stringify(item.steps),
+              JSON.stringify(item.originalSteps),
+              item.expectedResult,
+              item.originalExpectedResult,
+              item.fingerprint,
+              item.sourceIssueId,
+              item.sourceType,
+              item.confidence,
+              JSON.stringify(item.warnings),
+              JSON.stringify(item.sourceEvidence),
+              item.status,
+              item.skipReason ?? null,
+              item.note ?? null,
+              item.deletedAt ?? null
+            );
+
+          for (const event of item.history) {
+            this.#recordHistory(session.id, item.id, event.action, event.detail, event.createdAt);
+          }
+
+          for (const screenshot of item.screenshots) {
+            this.#database
+              .prepare(`
+                INSERT INTO qa_item_screenshots (
+                  id, item_id, session_id, original_name, mime_type, size_bytes, local_path, local_reference, captured_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `)
+              .run(
+                screenshot.id,
+                item.id,
+                session.id,
+                screenshot.originalName,
+                screenshot.mimeType,
+                screenshot.sizeBytes,
+                screenshot.localPath,
+                screenshot.localReference,
+                screenshot.capturedAt
+              );
+          }
+        }
+      }
+    });
   }
 
   addManualItem(sessionId: string, item: ManualQaItemInput, createdAt = new Date().toISOString()): string {
@@ -527,6 +705,7 @@ export class QaStorageRepository {
 
     return {
       id: session.id,
+      version: session.session_version,
       title: session.title,
       repoName: session.repo_name,
       repoPath: session.repo_path,
@@ -540,6 +719,36 @@ export class QaStorageRepository {
       items: itemRows.map((item) =>
         toActiveItem(item, this.#getItemHistory(session.id, item.id), this.#getItemScreenshots(session.id, item.id))
       )
+    };
+  }
+
+  #toExportSession(session: SessionRow): QaStorageExportSession {
+    const itemRows = this.#database
+      .prepare(`SELECT * FROM qa_items WHERE session_id = ? ORDER BY rowid ASC`)
+      .all(session.id) as unknown as ItemRow[];
+
+    return {
+      id: session.id,
+      version: session.session_version,
+      title: session.title,
+      tracker: toQaTracker(session.tracker),
+      repoName: session.repo_name,
+      repoPath: session.repo_path,
+      parentIssueId: session.parent_issue_id,
+      parentIssueTitle: session.parent_issue_title,
+      parentIssueStatus: session.parent_issue_status,
+      generatedAt: session.generated_at,
+      importedAt: session.imported_at,
+      warnings: parseJson<string[]>(session.warnings_json),
+      sourceEvidence: parseJson<SourceEvidence[]>(session.source_evidence_json),
+      rawPayload: parseJson<QaSessionPayload>(session.raw_payload_json),
+      ...(session.archived_at ? { archivedAt: session.archived_at } : {}),
+      ...(session.deleted_at ? { deletedAt: session.deleted_at } : {}),
+      items: itemRows.map((item) => ({
+        ...toExportItem(item),
+        history: this.#getItemHistory(session.id, item.id),
+        screenshots: this.#getItemScreenshots(session.id, item.id)
+      }))
     };
   }
 
@@ -570,6 +779,55 @@ export class QaStorageRepository {
     if (!row) {
       throw new Error(`QA session ${sessionId} was not found.`);
     }
+  }
+
+  #findActiveSession(payload: QaSessionPayload): SessionRow | undefined {
+    return this.#database
+      .prepare(`
+        SELECT * FROM qa_sessions
+        WHERE tracker = ? AND repo_path = ? AND parent_issue_id = ? AND archived_at IS NULL AND deleted_at IS NULL
+        ORDER BY session_version DESC, imported_at DESC
+        LIMIT 1
+      `)
+      .get(payload.source.tracker, payload.source.repo.path, payload.source.parentIssue.id) as unknown as SessionRow | undefined;
+  }
+
+  #nextSessionVersion(payload: QaSessionPayload): number {
+    const row = this.#database
+      .prepare(`SELECT COALESCE(MAX(session_version), 0) + 1 AS version FROM qa_sessions WHERE tracker = ? AND repo_path = ? AND parent_issue_id = ?`)
+      .get(payload.source.tracker, payload.source.repo.path, payload.source.parentIssue.id) as unknown as { readonly version: number };
+    return row.version;
+  }
+
+  #sessionHasFingerprint(sessionId: string, fingerprint: string): boolean {
+    const row = this.#database
+      .prepare(`SELECT id FROM qa_items WHERE session_id = ? AND fingerprint = ? LIMIT 1`)
+      .get(sessionId, fingerprint) as unknown as { readonly id: string } | undefined;
+    return Boolean(row);
+  }
+
+  #availableItemId(preferredItemId: string, sessionId: string): string {
+    if (!this.#itemIdExists(preferredItemId)) {
+      return preferredItemId;
+    }
+
+    const sessionScopedItemId = `${preferredItemId}-${shortHash(sessionId)}`;
+    if (!this.#itemIdExists(sessionScopedItemId)) {
+      return sessionScopedItemId;
+    }
+
+    let suffix = 2;
+    while (this.#itemIdExists(`${sessionScopedItemId}-${suffix}`)) {
+      suffix += 1;
+    }
+    return `${sessionScopedItemId}-${suffix}`;
+  }
+
+  #itemIdExists(itemId: string): boolean {
+    const row = this.#database
+      .prepare(`SELECT id FROM qa_items WHERE id = ? LIMIT 1`)
+      .get(itemId) as unknown as { readonly id: string } | undefined;
+    return Boolean(row);
   }
 
   #ensureColumn(tableName: string, columnName: string, definition: string): void {
@@ -642,6 +900,28 @@ function toActiveItem(
   };
 }
 
+function toExportItem(item: ItemRow): Omit<QaStorageExportItem, 'history' | 'screenshots'> {
+  return {
+    id: item.id,
+    title: item.title,
+    originalTitle: item.original_title,
+    steps: parseJson<string[]>(item.steps_json),
+    originalSteps: parseJson<string[]>(item.original_steps_json),
+    expectedResult: item.expected_result,
+    originalExpectedResult: item.original_expected_result,
+    fingerprint: item.fingerprint,
+    sourceIssueId: item.source_issue_id,
+    sourceType: item.source_type === 'manual' ? 'manual' : 'generated',
+    confidence: item.confidence === 'low' ? 'low' : 'normal',
+    warnings: parseJson<string[]>(item.warnings_json),
+    sourceEvidence: parseJson<SourceEvidence[]>(item.source_evidence_json),
+    status: toQaItemStatus(item.status),
+    ...(item.skip_reason ? { skipReason: item.skip_reason } : {}),
+    ...(item.note ? { note: item.note } : {}),
+    ...(item.deleted_at ? { deletedAt: item.deleted_at } : {})
+  };
+}
+
 function toQaItemStatus(value: string): QaItemStatus {
   if (value === 'passed' || value === 'failed' || value === 'failed-filed' || value === 'skipped') {
     return value;
@@ -703,9 +983,9 @@ function archivedSessionMatches(session: ActiveQaSession, query: string): boolea
   return searchable.join(' ').toLowerCase().includes(query);
 }
 
-function createSessionId(payload: QaSessionPayload): string {
-  const source = `${payload.source.repo.path}:${payload.source.parentIssue.id}:${payload.generatedAt}`;
-  return `session-${Buffer.from(source).toString('base64url').slice(0, 32)}`;
+function createSessionId(payload: QaSessionPayload, version: number): string {
+  const source = `${payload.source.tracker}:${payload.source.repo.path}:${payload.source.parentIssue.id}:${version}`;
+  return `session-${shortHash(source)}`;
 }
 
 function createManualItemId(sessionId: string, title: string, createdAt: string): string {
@@ -714,6 +994,21 @@ function createManualItemId(sessionId: string, title: string, createdAt: string)
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T;
+}
+
+function shortHash(value: string): string {
+  return createHash('sha256').update(value).digest('base64url').slice(0, 32);
+}
+
+function isStorageExport(value: unknown): value is QaStorageExport {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as QaStorageExport).schemaVersion === 1 &&
+    typeof (value as QaStorageExport).exportedAt === 'string' &&
+    Array.isArray((value as QaStorageExport).sessions)
+  );
 }
 
 function normalizedScreenshotName(screenshot: FailureScreenshotInput): string {
@@ -760,14 +1055,19 @@ function sanitizePathSegment(value: string): string {
 
 interface SessionRow {
   readonly id: string;
+  readonly session_version: number;
   readonly title: string;
   readonly tracker: string;
   readonly repo_name: string;
   readonly repo_path: string;
   readonly parent_issue_id: string;
   readonly parent_issue_title: string;
+  readonly parent_issue_status: string;
   readonly generated_at: string;
+  readonly imported_at: string;
+  readonly raw_payload_json: string;
   readonly archived_at: string | null;
+  readonly deleted_at: string | null;
   readonly warnings_json: string;
   readonly source_evidence_json: string;
 }
@@ -802,6 +1102,7 @@ interface ItemRow {
   readonly status: string;
   readonly skip_reason: string | null;
   readonly note: string | null;
+  readonly deleted_at: string | null;
 }
 
 interface HistoryRow {
