@@ -86,10 +86,6 @@ describe('QA To Do MCP server', () => {
 
   it('registers qa_failed_item_get with saved app-storage screenshot references', async () => {
     const config = await createTemporaryMcpConfig(temporaryDirectories);
-    const sourceDir = join(config.storageRoot, 'source');
-    mkdirSync(sourceDir, { recursive: true });
-    const sourcePath = join(sourceDir, 'failure.png');
-    writeFileSync(sourcePath, 'png-bytes');
     const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
     const payload = createBeadsQaSessionFromParent('parent-1', issues, repo, '2026-05-12T09:00:00.000Z');
     const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
@@ -97,11 +93,11 @@ describe('QA To Do MCP server', () => {
 
     repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
     saveActualBehavior(repository, sessionId, item, 'The import panel stays empty after refresh.');
-    repository.attachFailureScreenshot(sessionId, item.id, {
-      sourcePath,
+    const screenshotSize = attachFailureScreenshot(repository, config.storageRoot, sessionId, item.id, {
       originalName: 'failure.png',
+      contents: 'png-bytes',
       mimeType: 'image/png'
-    }, '2026-05-12T09:02:00.000Z');
+    });
     repository.close();
 
     createQaToDoMcpServer(configEnv(config));
@@ -134,7 +130,7 @@ describe('QA To Do MCP server', () => {
           expect.objectContaining({
             name: 'failure.png',
             mimeType: 'image/png',
-            sizeBytes: 9,
+            sizeBytes: screenshotSize,
             localReference: expect.stringContaining('app-storage://screenshots/')
           })
         ]
@@ -161,10 +157,6 @@ describe('QA To Do MCP server', () => {
 
   it('registers qa_failed_item_get with structured .scratch draft markdown and screenshot references', async () => {
     const config = await createTemporaryMcpConfig(temporaryDirectories);
-    const sourceDir = join(config.storageRoot, 'source');
-    mkdirSync(sourceDir, { recursive: true });
-    const sourcePath = join(sourceDir, 'scratch-failure.png');
-    writeFileSync(sourcePath, 'scratch-png-bytes');
     const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
     const payload = createScratchQaSessionFromParent('scratch-parent', scratchIssues, repo, '2026-05-12T09:00:00.000Z');
     const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
@@ -172,11 +164,11 @@ describe('QA To Do MCP server', () => {
 
     repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
     saveActualBehavior(repository, sessionId, item, 'The scratch workflow shows stale content after refresh.');
-    repository.attachFailureScreenshot(sessionId, item.id, {
-      sourcePath,
+    const screenshotSize = attachFailureScreenshot(repository, config.storageRoot, sessionId, item.id, {
       originalName: 'scratch-failure.png',
+      contents: 'scratch-png-bytes',
       mimeType: 'image/png'
-    }, '2026-05-12T09:02:00.000Z');
+    });
     repository.close();
 
     createQaToDoMcpServer(configEnv(config));
@@ -208,7 +200,7 @@ describe('QA To Do MCP server', () => {
           expect.objectContaining({
             name: 'scratch-failure.png',
             mimeType: 'image/png',
-            sizeBytes: 17,
+            sizeBytes: screenshotSize,
             localReference: expect.stringContaining('app-storage://screenshots/')
           })
         ]
@@ -229,7 +221,9 @@ describe('QA To Do MCP server', () => {
     });
     expect(response.draftIssue.copyableIssueText).toContain('type: bug');
     expect(response.draftIssue.copyableIssueText).toContain('qaFailureFingerprint: qa-failure:/repos/sample-repo:scratch-parent:');
-    expect(response.draftIssue.copyableIssueText).toContain('scratch-failure.png (image/png, 17 bytes): app-storage://screenshots/');
+    expect(response.draftIssue.copyableIssueText).toContain(
+      `scratch-failure.png (image/png, ${screenshotSize} bytes): app-storage://screenshots/`
+    );
     expect(JSON.stringify(response)).not.toContain('scratch-png-bytes');
   });
 });
@@ -266,6 +260,25 @@ function saveActualBehavior(
     expectedResult: item.expectedResult,
     note: actualBehavior
   }, '2026-05-12T09:01:30.000Z');
+}
+
+function attachFailureScreenshot(
+  repository: QaStorageRepository,
+  storageRoot: string,
+  sessionId: string,
+  itemId: string,
+  screenshot: { readonly originalName: string; readonly contents: string; readonly mimeType: string }
+): number {
+  const sourceDir = join(storageRoot, 'source');
+  mkdirSync(sourceDir, { recursive: true });
+  const sourcePath = join(sourceDir, screenshot.originalName);
+  writeFileSync(sourcePath, screenshot.contents);
+  repository.attachFailureScreenshot(sessionId, itemId, {
+    sourcePath,
+    originalName: screenshot.originalName,
+    mimeType: screenshot.mimeType
+  }, '2026-05-12T09:02:00.000Z');
+  return Buffer.byteLength(screenshot.contents);
 }
 
 function configEnv(config: QaToDoMcpConfig): NodeJS.ProcessEnv {
