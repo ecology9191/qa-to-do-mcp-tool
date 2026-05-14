@@ -26,11 +26,21 @@ const runToQaInputSchema = {
 };
 
 const failedItemsListToolName = 'qa_failed_items_list';
+const failedItemGetToolName = 'qa_failed_item_get';
 const failedItemsListToolDefinition = requiredToolDefinition(failedItemsListToolName);
+const failedItemGetToolDefinition = requiredToolDefinition(failedItemGetToolName);
 
 const failedItemsListInputSchema = {
   includeFiled: z.boolean().optional().describe(
     failedItemsListToolDefinition.inputSchema.properties.includeFiled.description
+  )
+};
+
+const failedItemGetInputSchema = {
+  sessionId: z.string().describe(failedItemGetToolDefinition.inputSchema.properties.sessionId.description),
+  itemId: z.string().describe(failedItemGetToolDefinition.inputSchema.properties.itemId.description),
+  includeDraftIssue: z.boolean().optional().describe(
+    failedItemGetToolDefinition.inputSchema.properties.includeDraftIssue.description
   )
 };
 
@@ -76,6 +86,25 @@ export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): Mcp
     }
   );
 
+  server.registerTool(
+    failedItemGetToolName,
+    {
+      title: 'Get Failed QA Item',
+      description: failedItemGetToolDefinition.description,
+      inputSchema: failedItemGetInputSchema
+    },
+    async (input) => {
+      const config = resolveQaToDoMcpConfig(env);
+      const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+
+      try {
+        return toTextResult(handleQaToDoMcpToolCall(repository, failedItemGetToolName, input));
+      } finally {
+        repository.close();
+      }
+    }
+  );
+
   return server;
 }
 
@@ -95,7 +124,7 @@ function toTextResult(value: unknown) {
   };
 }
 
-function requiredToolDefinition(name: typeof failedItemsListToolName) {
+function requiredToolDefinition(name: typeof failedItemsListToolName | typeof failedItemGetToolName) {
   const toolDefinition = qaToDoMcpToolDefinitions.find((tool) => tool.name === name);
   if (!toolDefinition) {
     throw new Error(`${name} MCP tool definition is missing.`);

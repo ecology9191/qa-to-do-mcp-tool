@@ -166,6 +166,21 @@ describe('QA To Do MCP failed QA tools', () => {
     expect(result.draftIssue?.copyableIssueText).toContain('QA-Failure-Fingerprint');
   });
 
+  it('rejects missing or non-failed Beads item identifiers for evidence extraction', () => {
+    const repository = new QaStorageRepository();
+    const payload = createBeadsQaSessionFromParent('parent-1', beadsIssues.slice(0, 2), repo, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+    const item = payload.items[0];
+
+    expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_get', { itemId: item.id })).toThrow('sessionId is required.');
+    expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_get', { sessionId })).toThrow('itemId is required.');
+    expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_get', { sessionId, itemId: item.id })).toThrow(
+      `QA item ${item.id} in session ${sessionId} is not failed or failed-filed.`
+    );
+
+    repository.close();
+  });
+
   it('extracts .scratch failures through the same failure context with a structured markdown draft', () => {
     const repository = new QaStorageRepository();
     const payload = createScratchQaSessionFromParent('scratch-parent', scratchIssues, repo, '2026-05-12T09:00:00.000Z');

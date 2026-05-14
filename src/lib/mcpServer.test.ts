@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -80,6 +81,81 @@ describe('QA To Do MCP server', () => {
         }
       ]
     });
+  });
+
+  it('registers qa_failed_item_get with saved app-storage screenshot references', async () => {
+    const config = await createTemporaryMcpConfig(temporaryDirectories);
+    const sourceDir = join(config.storageRoot, 'source');
+    mkdirSync(sourceDir, { recursive: true });
+    const sourcePath = join(sourceDir, 'failure.png');
+    writeFileSync(sourcePath, 'png-bytes');
+    const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+    const payload = createBeadsQaSessionFromParent('parent-1', issues, repo, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+    const item = payload.items[0];
+
+    repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
+    saveActualBehavior(repository, sessionId, item, 'The import panel stays empty after refresh.');
+    repository.attachFailureScreenshot(sessionId, item.id, {
+      sourcePath,
+      originalName: 'failure.png',
+      mimeType: 'image/png'
+    }, '2026-05-12T09:02:00.000Z');
+    repository.close();
+
+    createQaToDoMcpServer(configEnv(config));
+    const tool = registeredTool('qa_failed_item_get');
+
+    expect(tool.config.description).toContain('saved actual behavior');
+    const response = JSON.parse((await tool.handler({ sessionId, itemId: item.id })).content[0].text);
+
+    expect(response).toMatchObject({
+      schemaVersion: 1,
+      kind: 'qa-failed-item.detail',
+      sessionId,
+      itemId: item.id,
+      status: 'failed',
+      tracker: 'beads',
+      actualBehavior: 'The import panel stays empty after refresh.',
+      failureContext: {
+        repo: { name: 'sample-repo', path: '/repos/sample-repo' },
+        parentIssue: { id: 'parent-1', title: 'Parent feature' },
+        item: {
+          id: item.id,
+          steps: item.steps,
+          expectedResult: item.expectedResult,
+          fingerprint: item.fingerprint,
+          sourceIssueId: 'child-closed',
+          sourceEvidence: item.sourceEvidence
+        },
+        actualBehavior: 'The import panel stays empty after refresh.',
+        screenshots: [
+          expect.objectContaining({
+            name: 'failure.png',
+            mimeType: 'image/png',
+            sizeBytes: 9,
+            localReference: expect.stringContaining('app-storage://screenshots/')
+          })
+        ]
+      },
+      screenshots: [
+        expect.objectContaining({
+          originalName: 'failure.png',
+          localReference: expect.stringContaining('app-storage://screenshots/'),
+          localPath: expect.stringContaining(join('screenshots', sessionId, item.id))
+        })
+      ],
+      draftIssue: expect.objectContaining({
+        kind: 'beads-failure-issue-draft',
+        issueType: 'bug',
+        labels: ['needs-triage', 'bug'],
+        discoveredFromIssueId: 'child-closed',
+        dedupeFingerprint: `qa-failure:/repos/sample-repo:parent-1:${item.fingerprint}`
+      })
+    });
+    expect(response.draftIssue.copyableIssueText).toContain('QA-Failure-Fingerprint');
+    expect(response.draftIssue.copyableIssueText).toContain('app-storage://screenshots/');
+    expect(JSON.stringify(response)).not.toContain('png-bytes');
   });
 });
 

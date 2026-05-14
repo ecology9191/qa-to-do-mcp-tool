@@ -953,7 +953,7 @@ export class QaStorageRepository {
   #toFailedQaItemRecord(row: FailedItemJoinRow): FailedQaItemRecord {
     const item = toActiveItem(row, this.#getItemHistory(row.session_id, row.id), this.#getItemScreenshots(row.session_id, row.id));
     if (!isFailedQaItem(item)) {
-      throw new Error('Only failed or failed-filed QA items can be extracted.');
+      throw new Error(`QA item ${row.id} in session ${row.session_id} is not failed or failed-filed.`);
     }
 
     return {
