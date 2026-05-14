@@ -57,7 +57,7 @@ export class QaSessionValidationError extends Error {
 
 export function validateQaSessionPayload(payload: unknown): QaSessionPayload {
   const issues: string[] = [];
-  let completedSourceIssueIds: Set<string> | undefined;
+  let completedSourceIssueIds: ReadonlySet<string> | undefined;
 
   if (!isRecord(payload)) {
     throw new QaSessionValidationError(['payload must be an object']);
@@ -200,12 +200,22 @@ function validateItems(value: unknown, issues: string[], completedSourceIssueIds
     issues.push('each QA item must map to one completed source issue');
   }
 
-  if (
-    completedSourceIssueIds &&
-    Array.from(completedSourceIssueIds).some((sourceIssueId) => !itemSourceIssueIds.has(sourceIssueId))
-  ) {
+  if (completedSourceIssueIds && hasMissingSourceIssueQaItem(completedSourceIssueIds, itemSourceIssueIds)) {
     issues.push('each completed source issue must have one QA item');
   }
+}
+
+function hasMissingSourceIssueQaItem(
+  completedSourceIssueIds: ReadonlySet<string>,
+  itemSourceIssueIds: ReadonlySet<string>
+): boolean {
+  for (const sourceIssueId of completedSourceIssueIds) {
+    if (!itemSourceIssueIds.has(sourceIssueId)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function validateEvidenceArray(value: unknown, path: string, issues: string[]): void {

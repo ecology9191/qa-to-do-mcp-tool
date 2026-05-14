@@ -168,11 +168,10 @@ describe('MCP inbox import', () => {
         }
       ]
     };
+    const validateInvalidPayload = () => validateQaSessionPayload(invalidPayload);
 
-    expect(() => validateQaSessionPayload(invalidPayload)).toThrow(QaSessionValidationError);
-    expect(() => validateQaSessionPayload(invalidPayload)).toThrow(
-      'items[0].sourceIssueId must match one completed source issue'
-    );
+    expect(validateInvalidPayload).toThrow(QaSessionValidationError);
+    expect(validateInvalidPayload).toThrow('items[0].sourceIssueId must match one completed source issue');
   });
 
   it('rejects payloads missing a QA item for a completed source issue', () => {
@@ -184,9 +183,10 @@ describe('MCP inbox import', () => {
       ...payload,
       items: payload.items.filter((item) => item.sourceIssueId !== secondCompletedIssue.id)
     };
+    const validateInvalidPayload = () => validateQaSessionPayload(invalidPayload);
 
-    expect(() => validateQaSessionPayload(invalidPayload)).toThrow(QaSessionValidationError);
-    expect(() => validateQaSessionPayload(invalidPayload)).toThrow('each completed source issue must have one QA item');
+    expect(validateInvalidPayload).toThrow(QaSessionValidationError);
+    expect(validateInvalidPayload).toThrow('each completed source issue must have one QA item');
   });
 });
 
