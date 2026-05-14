@@ -1,11 +1,15 @@
 {
   "name": "qa-to-do",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "type": "module",
   "bin": {
-    "qa-to-do": "./dist-node/qa-to-do.js"
+    "qa-to-do": "dist-node/qa-to-do.js"
   },
+  "files": [
+    "dist-node/qa-to-do.js",
+    "README.md"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",

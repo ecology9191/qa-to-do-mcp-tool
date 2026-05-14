@@ -4,6 +4,9 @@
 *.db
 .beads-credential-key
 
+# Local agent instructions
+AGENTS.md
+
 # Node/Vite artifacts
 node_modules/
 dist/
