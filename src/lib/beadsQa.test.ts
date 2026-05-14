@@ -61,6 +61,24 @@ describe('Beads QA session generation', () => {
     );
   });
 
+  it('uses completed legacy children when the parent Beads issue is missing', () => {
+    const payload = createBeadsQaSessionFromParent('legacy-parent', legacyMissingParentIssues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+
+    expect(payload.source.parentIssue).toMatchObject({
+      id: 'legacy-parent',
+      title: 'Legacy Beads source legacy-parent',
+      status: 'missing'
+    });
+    expect(payload.source.sourceIssues.map((issue) => issue.id)).toEqual(['legacy-child-1', 'legacy-child-2']);
+    expect(payload.items.map((item) => item.sourceIssueId)).toEqual(['legacy-child-1', 'legacy-child-2']);
+    expect(payload.warnings).toContain(
+      'Parent issue legacy-parent was not found; used legacy child issue(s) that still reference it.'
+    );
+  });
+
   it('uses the completed requested issue itself when no related issues exist', () => {
     const payload = createBeadsQaSessionFromParent('standalone-done', [standaloneCompletedIssue], {
       name: 'sample-repo',
@@ -136,6 +154,27 @@ const cumulativeDiscoveredFromIssues: BeadsIssue[] = [
     title: 'Document cumulative behavior',
     status: 'open',
     dependencies: [{ issue_id: 'discovered-open', depends_on_id: 'cumulative-parent', type: 'discovered-from' }]
+  }
+];
+
+const legacyMissingParentIssues: BeadsIssue[] = [
+  {
+    id: 'legacy-child-1',
+    title: 'Import legacy session data',
+    status: 'closed',
+    dependencies: [{ issue_id: 'legacy-child-1', depends_on_id: 'legacy-parent', type: 'parent-child' }]
+  },
+  {
+    id: 'legacy-child-2',
+    title: 'Render legacy checklist rows',
+    status: 'done',
+    dependencies: [{ issue_id: 'legacy-child-2', depends_on_id: 'legacy-parent', type: 'parent-child' }]
+  },
+  {
+    id: 'legacy-child-open',
+    title: 'Document legacy checklist rows',
+    status: 'open',
+    dependencies: [{ issue_id: 'legacy-child-open', depends_on_id: 'legacy-parent', type: 'parent-child' }]
   }
 ];
 

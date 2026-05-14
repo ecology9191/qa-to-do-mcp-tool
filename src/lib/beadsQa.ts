@@ -48,11 +48,11 @@ export function createBeadsQaSessionFromParent(
   generatedAt = new Date().toISOString()
 ): QaSessionPayload {
   const parent = issues.find((issue) => issue.id === parentIssueId);
-  if (!parent) {
+  const sourceWork = selectSourceWork(parentIssueId, parent, issues);
+  if (!parent && sourceWork.issues.length === 0) {
     throw new Error(`Parent issue ${parentIssueId} was not found.`);
   }
 
-  const sourceWork = selectSourceWork(parentIssueId, parent, issues);
   const completedChildren = sourceWork.issues.filter((issue) => isCompletedStatus(issue.status));
   const incompleteChildren = sourceWork.incompleteIssues;
 
@@ -60,11 +60,14 @@ export function createBeadsQaSessionFromParent(
     throw new NoCompletedSourceWorkError(parentIssueId);
   }
 
+  const sessionParent = parent ?? createLegacyMissingParent(parentIssueId);
+
   const completedChildWork = completedChildren.map((issue) => ({
     issue,
     acceptanceCriteria: extractAcceptanceCriteria(issue.description ?? '')
   }));
 
+  const missingParentWarning = createMissingParentWarning(parentIssueId, parent, sourceWork.mode);
   const incompleteWarning = createIncompleteChildrenWarning(incompleteChildren, sourceWork.mode);
   const cumulativeFallbackWarning = createCumulativeFallbackWarning(parentIssueId, sourceWork.mode);
 
@@ -100,15 +103,15 @@ export function createBeadsQaSessionFromParent(
 
   return {
     schemaVersion: qaSessionSchemaVersion,
-    title: `${repo.name} ${parent.id} QA`,
+    title: `${repo.name} ${sessionParent.id} QA`,
     generatedAt,
     source: {
       tracker: 'beads',
       repo,
       parentIssue: {
-        id: parent.id,
-        title: parent.title,
-        status: parent.status
+        id: sessionParent.id,
+        title: sessionParent.title,
+        status: sessionParent.status
       },
       sourceIssues: completedChildWork.map(({ issue: child, acceptanceCriteria }) => ({
         id: child.id,
@@ -119,22 +122,23 @@ export function createBeadsQaSessionFromParent(
         evidence: createSourceEvidence(child, acceptanceCriteria)
       })),
       sessionEvidence: [
-        { label: 'Parent issue', value: `${parent.id}: ${parent.title}` },
+        { label: 'Parent issue', value: `${sessionParent.id}: ${sessionParent.title}` },
         {
           label: createCompletedSourceWorkLabel(sourceWork.mode),
           value: completedChildren.map((child) => child.id).join(', ')
         },
+        ...createMissingParentEvidence(parentIssueId, parent, sourceWork.mode),
         ...createCumulativeFallbackEvidence(parentIssueId, sourceWork.mode)
       ]
     },
-    warnings: [...cumulativeFallbackWarning, ...incompleteWarning, ...lowConfidenceWarnings],
+    warnings: [...missingParentWarning, ...cumulativeFallbackWarning, ...incompleteWarning, ...lowConfidenceWarnings],
     items
   };
 }
 
 function selectSourceWork(
   parentIssueId: string,
-  parent: BeadsIssue,
+  parent: BeadsIssue | undefined,
   issues: readonly BeadsIssue[]
 ): SourceWorkSelection {
   const children = issues.filter((issue) => hasDependency(issue, 'parent-child', parentIssueId));
@@ -155,11 +159,19 @@ function selectSourceWork(
     };
   }
 
-  if (isCompletedStatus(parent.status)) {
+  if (parent && isCompletedStatus(parent.status)) {
     return { issues: [parent], incompleteIssues: [], mode: 'standalone' };
   }
 
   return { issues: [], incompleteIssues: [], mode: 'children' };
+}
+
+function createLegacyMissingParent(parentIssueId: string): BeadsIssue {
+  return {
+    id: parentIssueId,
+    title: `Legacy Beads source ${parentIssueId}`,
+    status: 'missing'
+  };
 }
 
 function hasDependency(issue: BeadsIssue, type: string, parentIssueId: string): boolean {
@@ -183,6 +195,18 @@ function createIncompleteChildrenWarning(
   const issueSummaries = incompleteChildren.map((issue) => `${issue.id} (${issue.status})`).join(', ');
   const sourceLabel = mode === 'discovered-from' ? 'discovered-from issue(s)' : 'child issue(s)';
   return [`${incompleteChildren.length} incomplete ${sourceLabel} were excluded from QA: ${issueSummaries}`];
+}
+
+function createMissingParentWarning(
+  parentIssueId: string,
+  parent: BeadsIssue | undefined,
+  mode: SourceWorkSelection['mode']
+): string[] {
+  if (parent) {
+    return [];
+  }
+
+  return [`Parent issue ${parentIssueId} was not found; used legacy ${createSourceWorkWarningLabel(mode)} that still reference it.`];
 }
 
 function createCompletedSourceWorkLabel(mode: SourceWorkSelection['mode']): string {
@@ -215,6 +239,27 @@ function createCumulativeFallbackEvidence(
       value: `No parent-child children found for ${parentIssueId}; source work came from older Sandcastle cumulative Beads.`
     }
   ];
+}
+
+function createMissingParentEvidence(
+  parentIssueId: string,
+  parent: BeadsIssue | undefined,
+  mode: SourceWorkSelection['mode']
+): SourceEvidence[] {
+  if (parent) {
+    return [];
+  }
+
+  return [
+    {
+      label: 'Legacy missing parent',
+      value: `Parent issue ${parentIssueId} was not found; source work came from ${createSourceWorkWarningLabel(mode)} that reference it.`
+    }
+  ];
+}
+
+function createSourceWorkWarningLabel(mode: SourceWorkSelection['mode']): string {
+  return mode === 'discovered-from' ? 'discovered-from issue(s)' : 'child issue(s)';
 }
 
 function createSourceEvidence(issue: BeadsIssue, acceptanceCriteria: readonly string[]): SourceEvidence[] {
