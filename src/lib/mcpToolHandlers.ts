@@ -284,6 +284,12 @@ export function handleQaToDoMcpToolCall(
   repository: QaStorageRepository,
   toolName: QaToDoMcpToolName,
   input: unknown,
+  options?: { readonly now?: string }
+): QaToDoMcpToolResponse;
+export function handleQaToDoMcpToolCall(
+  repository: QaStorageRepository,
+  toolName: QaToDoMcpToolName,
+  input: unknown,
   options: { readonly now?: string } = {}
 ): QaToDoMcpToolResponse {
   switch (toolName) {

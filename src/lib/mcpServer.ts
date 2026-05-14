@@ -6,7 +6,9 @@ import {
   createQaSessionFromPayload,
   handleQaToDoMcpToolCall,
   qaToDoMcpToolDefinitions,
-  runToQaParent
+  runToQaParent,
+  type QaToDoMcpToolDefinition,
+  type QaToDoMcpToolName
 } from './mcpToolHandlers';
 import { QaStorageRepository } from './qaStorage';
 
@@ -51,6 +53,11 @@ const failedItemMarkFiledInputSchema = {
   itemId: z.string().describe(failedItemMarkFiledToolDefinition.inputSchema.properties.itemId.description),
   filedIssueId: z.string().describe(failedItemMarkFiledToolDefinition.inputSchema.properties.filedIssueId.description)
 };
+
+type StorageBackedToolInputSchema =
+  | typeof failedItemsListInputSchema
+  | typeof failedItemGetInputSchema
+  | typeof failedItemMarkFiledInputSchema;
 
 export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): McpServer {
   const server = new McpServer({ name: 'qa-to-do', version: '0.1.0' });
@@ -114,8 +121,8 @@ function toTextResult(value: unknown) {
 
 function storageBackedToolConfig(
   title: string,
-  toolDefinition: ReturnType<typeof requiredToolDefinition>,
-  inputSchema: typeof failedItemsListInputSchema | typeof failedItemGetInputSchema | typeof failedItemMarkFiledInputSchema
+  toolDefinition: QaToDoMcpToolDefinition,
+  inputSchema: StorageBackedToolInputSchema
 ) {
   return {
     title,
@@ -126,36 +133,21 @@ function storageBackedToolConfig(
 
 function storageBackedToolHandler(
   env: NodeJS.ProcessEnv,
-  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName | typeof failedItemMarkFiledToolName
+  toolName: QaToDoMcpToolName
 ) {
   return async (input: unknown) => {
     const config = resolveQaToDoMcpConfig(env);
     const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
 
     try {
-      return toTextResult(handleStorageBackedToolCall(repository, toolName, input));
+      return toTextResult(handleQaToDoMcpToolCall(repository, toolName, input));
     } finally {
       repository.close();
     }
   };
 }
 
-function handleStorageBackedToolCall(
-  repository: QaStorageRepository,
-  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName | typeof failedItemMarkFiledToolName,
-  input: unknown
-) {
-  switch (toolName) {
-    case failedItemsListToolName:
-      return handleQaToDoMcpToolCall(repository, failedItemsListToolName, input);
-    case failedItemGetToolName:
-      return handleQaToDoMcpToolCall(repository, failedItemGetToolName, input);
-    case failedItemMarkFiledToolName:
-      return handleQaToDoMcpToolCall(repository, failedItemMarkFiledToolName, input);
-  }
-}
-
-function requiredToolDefinition(name: typeof failedItemsListToolName | typeof failedItemGetToolName | typeof failedItemMarkFiledToolName) {
+function requiredToolDefinition(name: QaToDoMcpToolName): QaToDoMcpToolDefinition {
   const toolDefinition = qaToDoMcpToolDefinitions.find((tool) => tool.name === name);
   if (!toolDefinition) {
     throw new Error(`${name} MCP tool definition is missing.`);
