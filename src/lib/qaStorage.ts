@@ -91,6 +91,20 @@ export interface ActiveQaItem {
   readonly history: readonly QaItemHistoryEvent[];
 }
 
+export interface FailedQaItemRecord {
+  readonly session: {
+    readonly id: string;
+    readonly title: string;
+    readonly tracker: QaTracker;
+    readonly repoName: string;
+    readonly repoPath: string;
+    readonly parentIssueId: string;
+    readonly parentIssueTitle: string;
+    readonly archivedAt?: string;
+  };
+  readonly item: ActiveQaItem & { readonly status: 'failed' | 'failed-filed' };
+}
+
 export type QaItemStatus = 'pending' | 'passed' | 'failed' | 'failed-filed' | 'skipped';
 
 type QaItemHistoryAction =
@@ -519,6 +533,76 @@ export class QaStorageRepository {
     });
   }
 
+  listFailedQaItems(options: { readonly includeFiled?: boolean } = {}): FailedQaItemRecord[] {
+    const statuses = options.includeFiled ? ['failed', 'failed-filed'] : ['failed'];
+    const placeholders = statuses.map(() => '?').join(', ');
+    const rows = this.#database
+      .prepare(
+        `SELECT
+           s.id AS session_id,
+           s.title AS session_title,
+           s.tracker,
+           s.repo_name,
+           s.repo_path,
+           s.parent_issue_id,
+           s.parent_issue_title,
+           s.archived_at,
+           i.*
+         FROM qa_items i
+         JOIN qa_sessions s ON s.id = i.session_id
+         WHERE s.deleted_at IS NULL
+           AND i.deleted_at IS NULL
+           AND i.status IN (${placeholders})
+         ORDER BY s.imported_at DESC, i.rowid ASC`
+      )
+      .all(...statuses) as unknown as FailedItemJoinRow[];
+
+    return rows.map((row) => this.#toFailedQaItemRecord(row));
+  }
+
+  getFailedQaItem(sessionId: string, itemId: string): FailedQaItemRecord {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedItemId = itemId.trim();
+    if (normalizedSessionId.length === 0) {
+      throw new Error('sessionId is required.');
+    }
+    if (normalizedItemId.length === 0) {
+      throw new Error('itemId is required.');
+    }
+
+    const row = this.#database
+      .prepare(
+        `SELECT
+           s.id AS session_id,
+           s.title AS session_title,
+           s.tracker,
+           s.repo_name,
+           s.repo_path,
+           s.parent_issue_id,
+           s.parent_issue_title,
+           s.archived_at,
+           i.*
+         FROM qa_items i
+         JOIN qa_sessions s ON s.id = i.session_id
+         WHERE s.id = ?
+           AND i.id = ?
+           AND s.deleted_at IS NULL
+           AND i.deleted_at IS NULL
+         LIMIT 1`
+      )
+      .get(normalizedSessionId, normalizedItemId) as unknown as FailedItemJoinRow | undefined;
+
+    if (!row) {
+      throw new Error(`QA item ${normalizedItemId} was not found in session ${normalizedSessionId}.`);
+    }
+    const status = toQaItemStatus(row.status);
+    if (status !== 'failed' && status !== 'failed-filed') {
+      throw new Error('Only failed or failed-filed QA items can be extracted.');
+    }
+
+    return this.#toFailedQaItemRecord(row);
+  }
+
   editItem(sessionId: string, itemId: string, edit: QaItemEdit, createdAt = new Date().toISOString()): void {
     const title = edit.title.trim();
     const steps = edit.steps.map((step) => step.trim());
@@ -868,6 +952,27 @@ export class QaStorageRepository {
     return rows.map(toFailureScreenshot);
   }
 
+  #toFailedQaItemRecord(row: FailedItemJoinRow): FailedQaItemRecord {
+    const item = toActiveItem(row, this.#getItemHistory(row.session_id, row.id), this.#getItemScreenshots(row.session_id, row.id));
+    if (item.status !== 'failed' && item.status !== 'failed-filed') {
+      throw new Error('Only failed or failed-filed QA items can be extracted.');
+    }
+
+    return {
+      session: {
+        id: row.session_id,
+        title: row.session_title,
+        tracker: toQaTracker(row.tracker),
+        repoName: row.repo_name,
+        repoPath: row.repo_path,
+        parentIssueId: row.parent_issue_id,
+        parentIssueTitle: row.parent_issue_title,
+        ...(row.archived_at ? { archivedAt: row.archived_at } : {})
+      },
+      item: item as FailedQaItemRecord['item']
+    };
+  }
+
   close(): void {
     this.#database.close();
   }
@@ -1103,6 +1208,17 @@ interface ItemRow {
   readonly skip_reason: string | null;
   readonly note: string | null;
   readonly deleted_at: string | null;
+}
+
+interface FailedItemJoinRow extends ItemRow {
+  readonly session_id: string;
+  readonly session_title: string;
+  readonly tracker: string;
+  readonly repo_name: string;
+  readonly repo_path: string;
+  readonly parent_issue_id: string;
+  readonly parent_issue_title: string;
+  readonly archived_at: string | null;
 }
 
 interface HistoryRow {

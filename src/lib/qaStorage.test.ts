@@ -82,6 +82,72 @@ describe('QA checklist storage', () => {
     expect(activeSession?.items[0].screenshots?.[0]?.localPath).toContain(join('screenshots', sessionId, itemId));
   });
 
+  it('discovers and retrieves failed QA evidence across unfiled and filed statuses', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'qa-failed-query-'));
+    const sourceDir = join(storageRoot, 'source');
+    mkdirSync(sourceDir);
+    const sourcePath = join(sourceDir, 'failure.png');
+    writeFileSync(sourcePath, 'png-bytes');
+    const repository = new QaStorageRepository(':memory:', storageRoot);
+    const payload = createBeadsQaSessionFromParent('parent-1', [...issues, secondClosedIssue], {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+    const [failedItem, filedItem] = payload.items;
+
+    repository.failItem(sessionId, failedItem.id, '2026-05-12T09:01:00.000Z');
+    repository.editItem(sessionId, failedItem.id, {
+      title: failedItem.title,
+      steps: failedItem.steps,
+      expectedResult: failedItem.expectedResult,
+      note: 'The reviewer-entered actual behavior is preserved.'
+    }, '2026-05-12T09:01:30.000Z');
+    repository.attachFailureScreenshot(sessionId, failedItem.id, {
+      sourcePath,
+      originalName: 'failure.png',
+      mimeType: 'image/png'
+    }, '2026-05-12T09:02:00.000Z');
+    repository.failItem(sessionId, filedItem.id, '2026-05-12T09:03:00.000Z');
+    repository.editItem(sessionId, filedItem.id, {
+      title: filedItem.title,
+      steps: filedItem.steps,
+      expectedResult: filedItem.expectedResult,
+      note: 'Already filed actual behavior.'
+    }, '2026-05-12T09:03:30.000Z');
+    repository.markFailureFiled(sessionId, filedItem.id, 'bug-2', '2026-05-12T09:04:00.000Z');
+
+    const defaultFailures = repository.listFailedQaItems();
+    const allFailures = repository.listFailedQaItems({ includeFiled: true });
+    const extracted = repository.getFailedQaItem(sessionId, failedItem.id);
+    repository.close();
+
+    expect(defaultFailures.map((record) => record.item.id)).toEqual([failedItem.id]);
+    expect(allFailures.map((record) => record.item.status)).toEqual(['failed', 'failed-filed']);
+    expect(extracted).toMatchObject({
+      session: {
+        id: sessionId,
+        tracker: 'beads',
+        repoName: 'sample-repo',
+        repoPath: '/repos/sample-repo',
+        parentIssueId: 'parent-1'
+      },
+      item: {
+        id: failedItem.id,
+        status: 'failed',
+        note: 'The reviewer-entered actual behavior is preserved.',
+        sourceIssueId: 'child-closed',
+        screenshots: [
+          expect.objectContaining({
+            originalName: 'failure.png',
+            localReference: expect.stringContaining('app-storage://'),
+            localPath: expect.stringContaining(join('screenshots', sessionId, failedItem.id))
+          })
+        ]
+      }
+    });
+  });
+
   it('persists manual items and soft delete restore without losing evidence or history', () => {
     const repository = new QaStorageRepository();
     const payload = createBeadsQaSessionFromParent('parent-1', issues, {
