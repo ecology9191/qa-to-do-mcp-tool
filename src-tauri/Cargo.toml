@@ -1,6 +1,6 @@
 [package]
 name = "qa-to-do"
-version = "0.1.1"
+version = "0.1.5"
 description = "Local-first QA To Do desktop app"
 authors = ["QA To Do Maintainers"]
 edition = "2021"
