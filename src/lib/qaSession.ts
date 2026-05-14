@@ -57,6 +57,7 @@ export class QaSessionValidationError extends Error {
 
 export function validateQaSessionPayload(payload: unknown): QaSessionPayload {
   const issues: string[] = [];
+  let completedSourceIssueIds: ReadonlySet<string> | undefined;
 
   if (!isRecord(payload)) {
     throw new QaSessionValidationError(['payload must be an object']);
@@ -78,14 +79,14 @@ export function validateQaSessionPayload(payload: unknown): QaSessionPayload {
     validateRepo(payload.source.repo, issues);
     validateParentIssue(payload.source.parentIssue, issues);
     validateEvidenceArray(payload.source.sessionEvidence, 'source.sessionEvidence', issues);
-    validateSourceIssues(payload.source.sourceIssues, issues);
+    completedSourceIssueIds = validateSourceIssues(payload.source.sourceIssues, issues);
   }
 
   if (!Array.isArray(payload.warnings) || !payload.warnings.every((warning) => isNonEmptyString(warning))) {
     issues.push('warnings must be an array of strings');
   }
 
-  validateItems(payload.items, issues);
+  validateItems(payload.items, issues, completedSourceIssueIds);
 
   if (issues.length > 0) {
     throw new QaSessionValidationError(issues);
@@ -115,11 +116,13 @@ function validateParentIssue(value: unknown, issues: string[]): void {
   requireString(value.status, 'source.parentIssue.status', issues);
 }
 
-function validateSourceIssues(value: unknown, issues: string[]): void {
+function validateSourceIssues(value: unknown, issues: string[]): Set<string> | undefined {
   if (!Array.isArray(value) || value.length === 0) {
     issues.push('source.sourceIssues must include at least one completed source issue');
-    return;
+    return undefined;
   }
+
+  const sourceIssueIds = new Set<string>();
 
   value.forEach((sourceIssue, index) => {
     if (!isRecord(sourceIssue)) {
@@ -128,20 +131,25 @@ function validateSourceIssues(value: unknown, issues: string[]): void {
     }
 
     requireString(sourceIssue.id, `source.sourceIssues[${index}].id`, issues);
+    if (isNonEmptyString(sourceIssue.id)) {
+      sourceIssueIds.add(sourceIssue.id);
+    }
     requireString(sourceIssue.title, `source.sourceIssues[${index}].title`, issues);
     requireString(sourceIssue.status, `source.sourceIssues[${index}].status`, issues);
     validateEvidenceArray(sourceIssue.evidence, `source.sourceIssues[${index}].evidence`, issues);
   });
+
+  return sourceIssueIds;
 }
 
-function validateItems(value: unknown, issues: string[]): void {
+function validateItems(value: unknown, issues: string[], completedSourceIssueIds?: ReadonlySet<string>): void {
   if (!Array.isArray(value) || value.length === 0) {
     issues.push('items must include at least one QA check');
     return;
   }
 
   const fingerprints = new Set<string>();
-  const sourceIssueIds = new Set<string>();
+  const itemSourceIssueIds = new Set<string>();
 
   value.forEach((item, index) => {
     if (!isRecord(item)) {
@@ -155,8 +163,11 @@ function validateItems(value: unknown, issues: string[]): void {
     requireString(item.fingerprint, `items[${index}].fingerprint`, issues);
     requireString(item.sourceIssueId, `items[${index}].sourceIssueId`, issues);
 
-    if (typeof item.sourceIssueId === 'string') {
-      sourceIssueIds.add(item.sourceIssueId);
+    if (isNonEmptyString(item.sourceIssueId)) {
+      itemSourceIssueIds.add(item.sourceIssueId);
+      if (completedSourceIssueIds && !completedSourceIssueIds.has(item.sourceIssueId)) {
+        issues.push(`items[${index}].sourceIssueId must match one completed source issue`);
+      }
     }
 
     if (!Array.isArray(item.steps) || item.steps.length === 0 || !item.steps.every((step) => isNonEmptyString(step))) {
@@ -185,9 +196,26 @@ function validateItems(value: unknown, issues: string[]): void {
     }
   });
 
-  if (sourceIssueIds.size !== value.length) {
+  if (itemSourceIssueIds.size !== value.length) {
     issues.push('each QA item must map to one completed source issue');
   }
+
+  if (completedSourceIssueIds && hasMissingSourceIssueQaItem(completedSourceIssueIds, itemSourceIssueIds)) {
+    issues.push('each completed source issue must have one QA item');
+  }
+}
+
+function hasMissingSourceIssueQaItem(
+  completedSourceIssueIds: ReadonlySet<string>,
+  itemSourceIssueIds: ReadonlySet<string>
+): boolean {
+  for (const sourceIssueId of completedSourceIssueIds) {
+    if (!itemSourceIssueIds.has(sourceIssueId)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function validateEvidenceArray(value: unknown, path: string, issues: string[]): void {

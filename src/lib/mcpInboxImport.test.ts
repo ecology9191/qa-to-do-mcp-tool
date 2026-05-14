@@ -153,6 +153,41 @@ describe('MCP inbox import', () => {
       QaSessionValidationError
     );
   });
+
+  it('rejects QA items that do not map to completed source issue evidence', () => {
+    const payload = createBeadsQaSessionFromParent('parent-1', issues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    });
+    const invalidPayload = {
+      ...payload,
+      items: [
+        {
+          ...payload.items[0],
+          sourceIssueId: 'unrelated-closed-child'
+        }
+      ]
+    };
+    const validateInvalidPayload = () => validateQaSessionPayload(invalidPayload);
+
+    expect(validateInvalidPayload).toThrow(QaSessionValidationError);
+    expect(validateInvalidPayload).toThrow('items[0].sourceIssueId must match one completed source issue');
+  });
+
+  it('rejects payloads missing a QA item for a completed source issue', () => {
+    const payload = createBeadsQaSessionFromParent('parent-1', [...issues, secondCompletedIssue], {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    });
+    const invalidPayload = {
+      ...payload,
+      items: payload.items.filter((item) => item.sourceIssueId !== secondCompletedIssue.id)
+    };
+    const validateInvalidPayload = () => validateQaSessionPayload(invalidPayload);
+
+    expect(validateInvalidPayload).toThrow(QaSessionValidationError);
+    expect(validateInvalidPayload).toThrow('each completed source issue must have one QA item');
+  });
 });
 
 const issues: BeadsIssue[] = [
@@ -179,6 +214,18 @@ const issues: BeadsIssue[] = [
     dependencies: [{ issue_id: 'child-open', depends_on_id: 'parent-1', type: 'parent-child' }]
   }
 ];
+
+const secondCompletedIssue: BeadsIssue = {
+  id: 'child-completed-2',
+  title: 'Display QA source context',
+  status: 'closed',
+  closed_at: '2026-05-12T08:30:00.000Z',
+  description: `## Acceptance criteria
+
+- The QA view shows source issue context for every generated check.
+`,
+  dependencies: [{ issue_id: 'child-completed-2', depends_on_id: 'parent-1', type: 'parent-child' }]
+};
 
 interface ScratchIssueFixture {
   readonly id: string;
