@@ -199,6 +199,13 @@ function validateItems(value: unknown, issues: string[], completedSourceIssueIds
   if (itemSourceIssueIds.size !== value.length) {
     issues.push('each QA item must map to one completed source issue');
   }
+
+  if (
+    completedSourceIssueIds &&
+    Array.from(completedSourceIssueIds).some((sourceIssueId) => !itemSourceIssueIds.has(sourceIssueId))
+  ) {
+    issues.push('each completed source issue must have one QA item');
+  }
 }
 
 function validateEvidenceArray(value: unknown, path: string, issues: string[]): void {
