@@ -157,6 +157,38 @@ describe('QA To Do MCP server', () => {
     expect(response.draftIssue.copyableIssueText).toContain('app-storage://screenshots/');
     expect(JSON.stringify(response)).not.toContain('png-bytes');
   });
+
+  it('registers qa_failed_item_mark_filed against local QA To Do storage', async () => {
+    const config = await createTemporaryMcpConfig(temporaryDirectories);
+    const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+    const payload = createBeadsQaSessionFromParent('parent-1', issues, repo, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+    const item = payload.items[0];
+
+    repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
+    saveActualBehavior(repository, sessionId, item, 'The import panel stays empty after refresh.');
+    repository.close();
+
+    createQaToDoMcpServer(configEnv(config));
+    const tool = registeredTool('qa_failed_item_mark_filed');
+
+    expect(tool.config.description).toContain('This never creates tracker issues');
+    const response = JSON.parse((await tool.handler({ sessionId, itemId: item.id, filedIssueId: 'bug-2' })).content[0].text);
+    const storedRepository = new QaStorageRepository(config.databasePath, config.storageRoot);
+    const stored = storedRepository.getFailedQaItem(sessionId, item.id);
+    storedRepository.close();
+
+    expect(response).toEqual({
+      schemaVersion: 1,
+      kind: 'qa-failed-item.mark-filed',
+      sessionId,
+      itemId: item.id,
+      status: 'failed-filed',
+      filedIssueId: 'bug-2'
+    });
+    expect(stored.item.status).toBe('failed-filed');
+    expect(stored.item.history).toContainEqual(expect.objectContaining({ action: 'failed-filed', detail: 'bug-2' }));
+  });
 });
 
 async function createTemporaryMcpConfig(temporaryDirectories: string[]): Promise<QaToDoMcpConfig> {

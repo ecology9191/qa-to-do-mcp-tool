@@ -207,18 +207,33 @@ describe('QA To Do MCP failed QA tools', () => {
     const repository = new QaStorageRepository();
     const payload = createBeadsQaSessionFromParent('parent-1', beadsIssues, repo, '2026-05-12T09:00:00.000Z');
     const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
-    const [failedItem, pendingItem] = payload.items;
+    const [failedItem, pendingItem, passedItem, skippedItem, alreadyFiledItem] = payload.items;
 
+    expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_mark_filed', {
+      itemId: failedItem.id,
+      filedIssueId: 'bug-2'
+    })).toThrow('sessionId is required.');
+    expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_mark_filed', {
+      sessionId,
+      filedIssueId: 'bug-2'
+    })).toThrow('itemId is required.');
     expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_mark_filed', {
       sessionId,
       itemId: failedItem.id,
       filedIssueId: '   '
     })).toThrow('filedIssueId is required.');
-    expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_mark_filed', {
-      sessionId,
-      itemId: pendingItem.id,
-      filedIssueId: 'bug-2'
-    })).toThrow('Only failed QA items can be marked failed-filed.');
+    repository.togglePassItem(sessionId, passedItem.id, '2026-05-12T09:01:00.000Z');
+    repository.skipItem(sessionId, skippedItem.id, 'Not applicable in this repo.', '2026-05-12T09:01:00.000Z');
+    repository.failItem(sessionId, alreadyFiledItem.id, '2026-05-12T09:01:00.000Z');
+    repository.markFailureFiled(sessionId, alreadyFiledItem.id, 'bug-1', '2026-05-12T09:01:30.000Z');
+
+    for (const item of [pendingItem, passedItem, skippedItem, alreadyFiledItem]) {
+      expect(() => handleQaToDoMcpToolCall(repository, 'qa_failed_item_mark_filed', {
+        sessionId,
+        itemId: item.id,
+        filedIssueId: 'bug-2'
+      })).toThrow('Only failed QA items can be marked failed-filed.');
+    }
 
     repository.failItem(sessionId, failedItem.id, '2026-05-12T09:01:00.000Z');
     saveActualBehavior(repository, sessionId, failedItem, 'The import panel stays empty.');
@@ -311,6 +326,39 @@ const beadsIssues: BeadsIssue[] = [
 - The backup command restores archived QA sessions.
 `,
     dependencies: [{ issue_id: 'child-closed-2', depends_on_id: 'parent-1', type: 'parent-child' }]
+  },
+  {
+    id: 'child-closed-3',
+    title: 'Archive QA sessions',
+    status: 'closed',
+    closed_at: '2026-05-12T08:20:00.000Z',
+    description: `## Acceptance criteria
+
+- The archive command hides completed QA sessions.
+`,
+    dependencies: [{ issue_id: 'child-closed-3', depends_on_id: 'parent-1', type: 'parent-child' }]
+  },
+  {
+    id: 'child-closed-4',
+    title: 'Restore QA sessions',
+    status: 'closed',
+    closed_at: '2026-05-12T08:30:00.000Z',
+    description: `## Acceptance criteria
+
+- The restore command brings back archived QA sessions.
+`,
+    dependencies: [{ issue_id: 'child-closed-4', depends_on_id: 'parent-1', type: 'parent-child' }]
+  },
+  {
+    id: 'child-closed-5',
+    title: 'Delete QA sessions',
+    status: 'closed',
+    closed_at: '2026-05-12T08:40:00.000Z',
+    description: `## Acceptance criteria
+
+- The delete command soft-deletes QA sessions.
+`,
+    dependencies: [{ issue_id: 'child-closed-5', depends_on_id: 'parent-1', type: 'parent-child' }]
   }
 ];
 

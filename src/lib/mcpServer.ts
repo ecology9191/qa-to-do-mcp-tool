@@ -27,8 +27,10 @@ const runToQaInputSchema = {
 
 const failedItemsListToolName = 'qa_failed_items_list';
 const failedItemGetToolName = 'qa_failed_item_get';
+const failedItemMarkFiledToolName = 'qa_failed_item_mark_filed';
 const failedItemsListToolDefinition = requiredToolDefinition(failedItemsListToolName);
 const failedItemGetToolDefinition = requiredToolDefinition(failedItemGetToolName);
+const failedItemMarkFiledToolDefinition = requiredToolDefinition(failedItemMarkFiledToolName);
 
 const failedItemsListInputSchema = {
   includeFiled: z.boolean().optional().describe(
@@ -42,6 +44,12 @@ const failedItemGetInputSchema = {
   includeDraftIssue: z.boolean().optional().describe(
     failedItemGetToolDefinition.inputSchema.properties.includeDraftIssue.description
   )
+};
+
+const failedItemMarkFiledInputSchema = {
+  sessionId: z.string().describe(failedItemMarkFiledToolDefinition.inputSchema.properties.sessionId.description),
+  itemId: z.string().describe(failedItemMarkFiledToolDefinition.inputSchema.properties.itemId.description),
+  filedIssueId: z.string().describe(failedItemMarkFiledToolDefinition.inputSchema.properties.filedIssueId.description)
 };
 
 export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): McpServer {
@@ -79,6 +87,12 @@ export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): Mcp
     storageBackedToolHandler(env, failedItemGetToolName)
   );
 
+  server.registerTool(
+    failedItemMarkFiledToolName,
+    storageBackedToolConfig('Mark Failed QA Item Filed', failedItemMarkFiledToolDefinition, failedItemMarkFiledInputSchema),
+    storageBackedToolHandler(env, failedItemMarkFiledToolName)
+  );
+
   return server;
 }
 
@@ -101,7 +115,7 @@ function toTextResult(value: unknown) {
 function storageBackedToolConfig(
   title: string,
   toolDefinition: ReturnType<typeof requiredToolDefinition>,
-  inputSchema: typeof failedItemsListInputSchema | typeof failedItemGetInputSchema
+  inputSchema: typeof failedItemsListInputSchema | typeof failedItemGetInputSchema | typeof failedItemMarkFiledInputSchema
 ) {
   return {
     title,
@@ -112,7 +126,7 @@ function storageBackedToolConfig(
 
 function storageBackedToolHandler(
   env: NodeJS.ProcessEnv,
-  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName
+  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName | typeof failedItemMarkFiledToolName
 ) {
   return async (input: unknown) => {
     const config = resolveQaToDoMcpConfig(env);
@@ -128,7 +142,7 @@ function storageBackedToolHandler(
 
 function handleStorageBackedToolCall(
   repository: QaStorageRepository,
-  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName,
+  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName | typeof failedItemMarkFiledToolName,
   input: unknown
 ) {
   switch (toolName) {
@@ -136,10 +150,12 @@ function handleStorageBackedToolCall(
       return handleQaToDoMcpToolCall(repository, failedItemsListToolName, input);
     case failedItemGetToolName:
       return handleQaToDoMcpToolCall(repository, failedItemGetToolName, input);
+    case failedItemMarkFiledToolName:
+      return handleQaToDoMcpToolCall(repository, failedItemMarkFiledToolName, input);
   }
 }
 
-function requiredToolDefinition(name: typeof failedItemsListToolName | typeof failedItemGetToolName) {
+function requiredToolDefinition(name: typeof failedItemsListToolName | typeof failedItemGetToolName | typeof failedItemMarkFiledToolName) {
   const toolDefinition = qaToDoMcpToolDefinitions.find((tool) => tool.name === name);
   if (!toolDefinition) {
     throw new Error(`${name} MCP tool definition is missing.`);
