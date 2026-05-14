@@ -1,7 +1,7 @@
 {
   "name": "qa-to-do",
   "version": "0.1.1",
-  "private": true,
+  "private": false,
   "type": "module",
   "bin": {
     "qa-to-do": "./dist-node/qa-to-do.js"
@@ -16,7 +16,8 @@
     "package:linux": "tauri build --bundles deb,appimage",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "typecheck:sandcastle": "tsc -p ./tsconfig.sandcastle.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "secrets:scan": "gitleaks detect --source . --verbose"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
