@@ -48,6 +48,8 @@ describe('provider setup', () => {
       }
     }, null, 2)}\n`);
     expect(plan.operations[1].after).toContain('When finished, report the created QA session');
+    expect(plan.operations[2].after).toContain('older non-parent Beads issues');
+    expect(plan.operations[2].after).toContain('parentIssueId` is legacy-named');
     expect(plan.operations[2].after).toContain('Do not mutate pass/fail/skip/edit/archive/delete state through MCP.');
 
     const result = await applyProviderSetupPlan(plan);

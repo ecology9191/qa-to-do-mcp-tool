@@ -309,26 +309,35 @@ function createToQaSkillContent(mcpCommand: readonly string[]): string {
 
   return `---
 name: to-qa
-description: Create a local QA To Do session from a Sandcastle/RALPH parent or cumulative issue.
+description: Create a local QA To Do session from Sandcastle/RALPH completed source work, including older non-parent Beads issues.
 compatibility: opencode
 metadata:
   workflow: sandcastle-ralph-qa
 ---
 
-Use this skill when the user runs \`/to-qa <parent or cumulative issue>\`.
+Use this skill when the user runs \`/to-qa <issue>\`.
+
+For Beads, the issue can be a parent with child work, an older cumulative issue, a discovered-from source issue, or a completed standalone issue with no parent-child structure. For structured .scratch, the issue is normally a parent with child files.
 
 ## Workflow
 
-1. Inspect the explicit parent or cumulative issue in the current repo.
-2. Find completed source work only: closed/completed/done Beads child issues, older cumulative Beads source work, or structured .scratch child files.
+1. Inspect the explicit source issue in the current repo.
+2. Find completed source work only: closed/completed/done Beads child issues, discovered-from Beads issues, older cumulative or standalone Beads issues, or structured .scratch child files.
 3. Read commits, changed files, and implementation context only as needed to write concrete QA checks.
 4. Create human-verifiable QA checks with title, runnable steps, expected result, source issue ID, source evidence, stable ID, and fingerprint.
-5. Call the \`qa-to-do\` MCP server to create the QA session.
-6. Report the session title, source parent or cumulative issue, item count, and warnings.
+5. Call the \`qa-to-do\` MCP server to create the QA session. The MCP input field \`parentIssueId\` is legacy-named; for Beads, pass the requested issue ID even when it is not a literal parent.
+6. Report the session title, source issue, item count, and warnings.
+
+## Beads Fallback
+
+- Do not require parent-child relationships for Beads; older Sandcastle/RALPH Beads may be cumulative or standalone.
+- Prefer parent-child children when present.
+- If no parent-child children exist, use completed discovered-from issues when present.
+- If neither relationship exists and the requested Beads issue is closed, completed, or done, use that issue itself as the completed source work.
 
 ## Rules
 
-- Do not create checks from open/incomplete child work; warn about excluded children.
+- Do not create checks from open/incomplete source work; warn about excluded work.
 - If there is no completed source work, fail clearly and do not create a session.
 - Do not write vague checks like "verify implementation" or "works as expected".
 - Do not mutate pass/fail/skip/edit/archive/delete state through MCP.
