@@ -69,40 +69,14 @@ export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): Mcp
 
   server.registerTool(
     failedItemsListToolName,
-    {
-      title: 'List Failed QA Items',
-      description: failedItemsListToolDefinition.description,
-      inputSchema: failedItemsListInputSchema
-    },
-    async (input) => {
-      const config = resolveQaToDoMcpConfig(env);
-      const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
-
-      try {
-        return toTextResult(handleQaToDoMcpToolCall(repository, failedItemsListToolName, input));
-      } finally {
-        repository.close();
-      }
-    }
+    storageBackedToolConfig('List Failed QA Items', failedItemsListToolDefinition, failedItemsListInputSchema),
+    storageBackedToolHandler(env, failedItemsListToolName)
   );
 
   server.registerTool(
     failedItemGetToolName,
-    {
-      title: 'Get Failed QA Item',
-      description: failedItemGetToolDefinition.description,
-      inputSchema: failedItemGetInputSchema
-    },
-    async (input) => {
-      const config = resolveQaToDoMcpConfig(env);
-      const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
-
-      try {
-        return toTextResult(handleQaToDoMcpToolCall(repository, failedItemGetToolName, input));
-      } finally {
-        repository.close();
-      }
-    }
+    storageBackedToolConfig('Get Failed QA Item', failedItemGetToolDefinition, failedItemGetInputSchema),
+    storageBackedToolHandler(env, failedItemGetToolName)
   );
 
   return server;
@@ -122,6 +96,47 @@ function toTextResult(value: unknown) {
       }
     ]
   };
+}
+
+function storageBackedToolConfig(
+  title: string,
+  toolDefinition: ReturnType<typeof requiredToolDefinition>,
+  inputSchema: typeof failedItemsListInputSchema | typeof failedItemGetInputSchema
+) {
+  return {
+    title,
+    description: toolDefinition.description,
+    inputSchema
+  };
+}
+
+function storageBackedToolHandler(
+  env: NodeJS.ProcessEnv,
+  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName
+) {
+  return async (input: unknown) => {
+    const config = resolveQaToDoMcpConfig(env);
+    const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+
+    try {
+      return toTextResult(handleStorageBackedToolCall(repository, toolName, input));
+    } finally {
+      repository.close();
+    }
+  };
+}
+
+function handleStorageBackedToolCall(
+  repository: QaStorageRepository,
+  toolName: typeof failedItemsListToolName | typeof failedItemGetToolName,
+  input: unknown
+) {
+  switch (toolName) {
+    case failedItemsListToolName:
+      return handleQaToDoMcpToolCall(repository, failedItemsListToolName, input);
+    case failedItemGetToolName:
+      return handleQaToDoMcpToolCall(repository, failedItemGetToolName, input);
+  }
 }
 
 function requiredToolDefinition(name: typeof failedItemsListToolName | typeof failedItemGetToolName) {
