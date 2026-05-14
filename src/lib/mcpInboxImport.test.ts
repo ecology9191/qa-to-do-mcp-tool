@@ -153,6 +153,27 @@ describe('MCP inbox import', () => {
       QaSessionValidationError
     );
   });
+
+  it('rejects QA items that do not map to completed source issue evidence', () => {
+    const payload = createBeadsQaSessionFromParent('parent-1', issues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    });
+    const invalidPayload = {
+      ...payload,
+      items: [
+        {
+          ...payload.items[0],
+          sourceIssueId: 'unrelated-closed-child'
+        }
+      ]
+    };
+
+    expect(() => validateQaSessionPayload(invalidPayload)).toThrow(QaSessionValidationError);
+    expect(() => validateQaSessionPayload(invalidPayload)).toThrow(
+      'items[0].sourceIssueId must match one completed source issue'
+    );
+  });
 });
 
 const issues: BeadsIssue[] = [
