@@ -19,7 +19,7 @@ const payloadInputSchema = {
 };
 
 const runToQaInputSchema = {
-  parentIssueId: z.string(),
+  parentIssueId: z.string().describe('Beads parent or cumulative issue ID, or structured .scratch parent issue ID.'),
   repoPath: z.string(),
   repoName: z.string().optional(),
   tracker: z.enum(['auto', 'beads', 'scratch']).optional(),
@@ -76,7 +76,8 @@ export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): Mcp
     'run_to_qa_parent',
     {
       title: 'Run To QA Parent Flow',
-      description: 'Create a QA session from completed Beads or structured .scratch child work for a parent issue.',
+      description:
+        'Create a QA session from completed Beads source work for a parent or cumulative issue, or structured .scratch child work for a parent issue.',
       inputSchema: runToQaInputSchema
     },
     async (input) => toTextResult(await runToQaParent(input, resolveQaToDoMcpConfig(env)))

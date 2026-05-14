@@ -309,22 +309,22 @@ function createToQaSkillContent(mcpCommand: readonly string[]): string {
 
   return `---
 name: to-qa
-description: Create a local QA To Do session from a Sandcastle/RALPH parent issue.
+description: Create a local QA To Do session from a Sandcastle/RALPH parent or cumulative issue.
 compatibility: opencode
 metadata:
   workflow: sandcastle-ralph-qa
 ---
 
-Use this skill when the user runs \`/to-qa <parent issue>\`.
+Use this skill when the user runs \`/to-qa <parent or cumulative issue>\`.
 
 ## Workflow
 
-1. Inspect the explicit parent issue in the current repo.
-2. Find completed source work only: closed/completed/done Beads child issues or structured .scratch child files.
+1. Inspect the explicit parent or cumulative issue in the current repo.
+2. Find completed source work only: closed/completed/done Beads child issues, older cumulative Beads source work, or structured .scratch child files.
 3. Read commits, changed files, and implementation context only as needed to write concrete QA checks.
 4. Create human-verifiable QA checks with title, runnable steps, expected result, source issue ID, source evidence, stable ID, and fingerprint.
 5. Call the \`qa-to-do\` MCP server to create the QA session.
-6. Report the session title, source parent, item count, and warnings.
+6. Report the session title, source parent or cumulative issue, item count, and warnings.
 
 ## Rules
 

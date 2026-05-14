@@ -25,7 +25,7 @@ export interface RepoContext {
 
 export class NoCompletedSourceWorkError extends Error {
   constructor(parentIssueId: string) {
-    super(`Parent issue ${parentIssueId} has no closed or completed Beads child work to convert into QA.`);
+    super(`Parent issue ${parentIssueId} has no closed or completed Beads source work to convert into QA.`);
     this.name = 'NoCompletedSourceWorkError';
   }
 }
@@ -33,6 +33,12 @@ export class NoCompletedSourceWorkError extends Error {
 interface CompletedChildWork {
   readonly issue: BeadsIssue;
   readonly acceptanceCriteria: readonly string[];
+}
+
+interface SourceWorkSelection {
+  readonly issues: readonly BeadsIssue[];
+  readonly incompleteIssues: readonly BeadsIssue[];
+  readonly mode: 'children' | 'discovered-from' | 'standalone';
 }
 
 export function createBeadsQaSessionFromParent(
@@ -46,13 +52,9 @@ export function createBeadsQaSessionFromParent(
     throw new Error(`Parent issue ${parentIssueId} was not found.`);
   }
 
-  const children = issues.filter((issue) =>
-    issue.dependencies?.some(
-      (dependency) => dependency.type === 'parent-child' && dependency.depends_on_id === parentIssueId
-    )
-  );
-  const completedChildren = children.filter((issue) => isCompletedStatus(issue.status));
-  const incompleteChildren = children.filter((issue) => !isCompletedStatus(issue.status));
+  const sourceWork = selectSourceWork(parentIssueId, parent, issues);
+  const completedChildren = sourceWork.issues.filter((issue) => isCompletedStatus(issue.status));
+  const incompleteChildren = sourceWork.incompleteIssues;
 
   if (completedChildren.length === 0) {
     throw new NoCompletedSourceWorkError(parentIssueId);
@@ -63,7 +65,8 @@ export function createBeadsQaSessionFromParent(
     acceptanceCriteria: extractAcceptanceCriteria(issue.description ?? '')
   }));
 
-  const incompleteWarning = createIncompleteChildrenWarning(incompleteChildren);
+  const incompleteWarning = createIncompleteChildrenWarning(incompleteChildren, sourceWork.mode);
+  const cumulativeFallbackWarning = createCumulativeFallbackWarning(parentIssueId, sourceWork.mode);
 
   const items = completedChildWork.map(({ issue: child, acceptanceCriteria }) => {
     const hasAcceptanceCriteria = acceptanceCriteria.length > 0;
@@ -117,25 +120,101 @@ export function createBeadsQaSessionFromParent(
       })),
       sessionEvidence: [
         { label: 'Parent issue', value: `${parent.id}: ${parent.title}` },
-        { label: 'Completed Beads children', value: completedChildren.map((child) => child.id).join(', ') }
+        {
+          label: createCompletedSourceWorkLabel(sourceWork.mode),
+          value: completedChildren.map((child) => child.id).join(', ')
+        },
+        ...createCumulativeFallbackEvidence(parentIssueId, sourceWork.mode)
       ]
     },
-    warnings: [...incompleteWarning, ...lowConfidenceWarnings],
+    warnings: [...cumulativeFallbackWarning, ...incompleteWarning, ...lowConfidenceWarnings],
     items
   };
+}
+
+function selectSourceWork(
+  parentIssueId: string,
+  parent: BeadsIssue,
+  issues: readonly BeadsIssue[]
+): SourceWorkSelection {
+  const children = issues.filter((issue) => hasDependency(issue, 'parent-child', parentIssueId));
+  if (children.length > 0) {
+    return {
+      issues: children,
+      incompleteIssues: children.filter((issue) => !isCompletedStatus(issue.status)),
+      mode: 'children'
+    };
+  }
+
+  const discoveredFromIssues = issues.filter((issue) => hasDependency(issue, 'discovered-from', parentIssueId));
+  if (discoveredFromIssues.length > 0) {
+    return {
+      issues: discoveredFromIssues,
+      incompleteIssues: discoveredFromIssues.filter((issue) => !isCompletedStatus(issue.status)),
+      mode: 'discovered-from'
+    };
+  }
+
+  if (isCompletedStatus(parent.status)) {
+    return { issues: [parent], incompleteIssues: [], mode: 'standalone' };
+  }
+
+  return { issues: [], incompleteIssues: [], mode: 'children' };
+}
+
+function hasDependency(issue: BeadsIssue, type: string, parentIssueId: string): boolean {
+  return (
+    issue.dependencies?.some((dependency) => dependency.type === type && dependency.depends_on_id === parentIssueId) ?? false
+  );
 }
 
 function isCompletedStatus(status: string): boolean {
   return ['closed', 'completed', 'done'].includes(status.toLowerCase());
 }
 
-function createIncompleteChildrenWarning(incompleteChildren: readonly BeadsIssue[]): string[] {
+function createIncompleteChildrenWarning(
+  incompleteChildren: readonly BeadsIssue[],
+  mode: SourceWorkSelection['mode']
+): string[] {
   if (incompleteChildren.length === 0) {
     return [];
   }
 
   const issueSummaries = incompleteChildren.map((issue) => `${issue.id} (${issue.status})`).join(', ');
-  return [`${incompleteChildren.length} incomplete child issue(s) were excluded from QA: ${issueSummaries}`];
+  const sourceLabel = mode === 'discovered-from' ? 'discovered-from issue(s)' : 'child issue(s)';
+  return [`${incompleteChildren.length} incomplete ${sourceLabel} were excluded from QA: ${issueSummaries}`];
+}
+
+function createCompletedSourceWorkLabel(mode: SourceWorkSelection['mode']): string {
+  if (mode === 'discovered-from') {
+    return 'Completed discovered-from Beads issues';
+  }
+  if (mode === 'standalone') {
+    return 'Completed cumulative Beads issue';
+  }
+  return 'Completed Beads children';
+}
+
+function createCumulativeFallbackWarning(parentIssueId: string, mode: SourceWorkSelection['mode']): string[] {
+  if (mode === 'children') {
+    return [];
+  }
+  return [`No parent-child children found for ${parentIssueId}; used cumulative Sandcastle fallback source work.`];
+}
+
+function createCumulativeFallbackEvidence(
+  parentIssueId: string,
+  mode: SourceWorkSelection['mode']
+): SourceEvidence[] {
+  if (mode === 'children') {
+    return [];
+  }
+  return [
+    {
+      label: 'Cumulative fallback',
+      value: `No parent-child children found for ${parentIssueId}; source work came from older Sandcastle cumulative Beads.`
+    }
+  ];
 }
 
 function createSourceEvidence(issue: BeadsIssue, acceptanceCriteria: readonly string[]): SourceEvidence[] {

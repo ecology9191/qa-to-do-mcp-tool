@@ -37,6 +37,48 @@ describe('Beads QA session generation', () => {
       })
     ).toThrow(NoCompletedSourceWorkError);
   });
+
+  it('uses completed discovered-from issues when the requested issue has no parent-child children', () => {
+    const payload = createBeadsQaSessionFromParent('cumulative-parent', cumulativeDiscoveredFromIssues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+
+    expect(payload.source.parentIssue).toMatchObject({ id: 'cumulative-parent', title: 'Older cumulative feature' });
+    expect(payload.source.sourceIssues.map((issue) => issue.id)).toEqual(['discovered-done']);
+    expect(payload.items.map((item) => item.sourceIssueId)).toEqual(['discovered-done']);
+    expect(payload.items[0].fingerprint).toBe('beads:/repos/sample-repo:cumulative-parent:discovered-done');
+    expect(payload.source.sessionEvidence).toContainEqual({
+      label: 'Cumulative fallback',
+      value:
+        'No parent-child children found for cumulative-parent; source work came from older Sandcastle cumulative Beads.'
+    });
+    expect(payload.warnings).toContain(
+      'No parent-child children found for cumulative-parent; used cumulative Sandcastle fallback source work.'
+    );
+    expect(payload.warnings).toContain(
+      '1 incomplete discovered-from issue(s) were excluded from QA: discovered-open (open)'
+    );
+  });
+
+  it('uses the completed requested issue itself when no related issues exist', () => {
+    const payload = createBeadsQaSessionFromParent('standalone-done', [standaloneCompletedIssue], {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+
+    expect(payload.source.parentIssue).toMatchObject({ id: 'standalone-done', title: 'Standalone cumulative feature' });
+    expect(payload.source.sourceIssues.map((issue) => issue.id)).toEqual(['standalone-done']);
+    expect(payload.items.map((item) => item.sourceIssueId)).toEqual(['standalone-done']);
+    expect(payload.items[0].fingerprint).toBe('beads:/repos/sample-repo:standalone-done:standalone-done');
+    expect(payload.source.sessionEvidence).toContainEqual({
+      label: 'Cumulative fallback',
+      value: 'No parent-child children found for standalone-done; source work came from older Sandcastle cumulative Beads.'
+    });
+    expect(payload.warnings).toContain(
+      'No parent-child children found for standalone-done; used cumulative Sandcastle fallback source work.'
+    );
+  });
 });
 
 const fixtureIssues: BeadsIssue[] = [
@@ -76,3 +118,29 @@ Import MCP inbox JSON.
     dependencies: [{ issue_id: 'child-open', depends_on_id: 'parent-1', type: 'parent-child' }]
   }
 ];
+
+const cumulativeDiscoveredFromIssues: BeadsIssue[] = [
+  {
+    id: 'cumulative-parent',
+    title: 'Older cumulative feature',
+    status: 'open'
+  },
+  {
+    id: 'discovered-done',
+    title: 'Implement cumulative behavior',
+    status: 'done',
+    dependencies: [{ issue_id: 'discovered-done', depends_on_id: 'cumulative-parent', type: 'discovered-from' }]
+  },
+  {
+    id: 'discovered-open',
+    title: 'Document cumulative behavior',
+    status: 'open',
+    dependencies: [{ issue_id: 'discovered-open', depends_on_id: 'cumulative-parent', type: 'discovered-from' }]
+  }
+];
+
+const standaloneCompletedIssue: BeadsIssue = {
+  id: 'standalone-done',
+  title: 'Standalone cumulative feature',
+  status: 'closed'
+};

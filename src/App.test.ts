@@ -18,7 +18,7 @@ describe('App shell', () => {
 
     expect(screen.getByRole('heading', { name: 'QA To Do' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Create one from your repo agent' })).toBeInTheDocument();
-    expect(screen.getAllByText('/to-qa <parent issue>', { selector: 'code' })).toHaveLength(2);
+    expect(screen.getAllByText('/to-qa <parent or cumulative issue>', { selector: 'code' })).toHaveLength(2);
     expect(screen.getByText(/write a validated MCP inbox message/i)).toBeInTheDocument();
   });
 

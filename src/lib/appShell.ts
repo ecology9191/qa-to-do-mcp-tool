@@ -83,7 +83,7 @@ export interface AppShellState {
   readonly configHealth: readonly ConfigHealthItem[];
 }
 
-export const emptyStateCommand = '/to-qa <parent issue>';
+export const emptyStateCommand = '/to-qa <parent or cumulative issue>';
 
 export function createInitialShellState(): AppShellState {
   return {
@@ -132,7 +132,7 @@ export function createShellStateFromActiveSession(session: QaSessionSummary): Ap
         id: 'tracker',
         label: 'Tracker readiness',
         state: 'ready',
-        summary: 'This active session came from Beads child work under the selected parent issue.'
+        summary: 'This active session came from source work under the selected parent or cumulative issue.'
       }
     ]
   };

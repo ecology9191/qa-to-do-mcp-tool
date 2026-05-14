@@ -7,6 +7,11 @@
 # Local agent instructions
 AGENTS.md
 
+# Local agent workspaces and session transcripts
+.sandcastle/
+.scratch/
+session-*.md
+
 # Node/Vite artifacts
 node_modules/
 dist/
