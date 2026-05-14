@@ -13,6 +13,8 @@ describe('Linux packaging', () => {
   it('configures Tauri to bundle installable Linux artifacts with Debian metadata', async () => {
     const config = JSON.parse(await readFile(join(process.cwd(), 'src-tauri', 'tauri.conf.json'), 'utf8'));
 
+    expect(config.productName).toBe('QA-To-Do');
+    expect(config.productName).not.toContain(' ');
     expect(config.bundle.active).toBe(true);
     expect(config.bundle.targets).toEqual(['deb', 'appimage']);
     expect(config.bundle.category).toBe('DeveloperTool');

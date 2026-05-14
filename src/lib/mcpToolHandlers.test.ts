@@ -5,9 +5,52 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createBeadsQaSessionFromParent, type BeadsIssue } from './beadsQa';
-import { handleQaToDoMcpToolCall, qaToDoMcpToolDefinitions } from './mcpToolHandlers';
+import type { QaToDoMcpConfig } from './mcpConfig';
+import { createQaSessionFromPayload, handleQaToDoMcpToolCall, qaToDoMcpToolDefinitions } from './mcpToolHandlers';
 import { QaStorageRepository } from './qaStorage';
 import { createScratchQaSessionFromParent, type ScratchIssue } from './scratchQa';
+
+describe('QA To Do MCP session handlers', () => {
+  it('creates a validated QA session through inbox import', async () => {
+    const config = await createTemporaryMcpConfig();
+    const payload = createBeadsQaSessionFromParent('parent-1', qaSessionIssues, {
+      name: 'sample-repo',
+      path: '/repos/sample-repo'
+    }, '2026-05-12T09:00:00.000Z');
+
+    const result = await createQaSessionFromPayload({
+      payload,
+      correlationId: 'test-correlation',
+      createdAt: '2026-05-12T09:00:01.000Z'
+    }, config);
+
+    expect(result.importedSessionIds).toHaveLength(1);
+    expect(result.quarantinedEntries).toEqual([]);
+    expect(result.inboxEntryPath).toContain(config.inboxDir);
+    expect(result.activeSession).toMatchObject({
+      title: 'sample-repo parent-1 QA',
+      tracker: 'beads',
+      repoPath: '/repos/sample-repo',
+      parentIssueId: 'parent-1',
+      itemCount: 1
+    });
+  });
+
+  it('rejects invalid payloads before writing inbox entries', async () => {
+    const config = await createTemporaryMcpConfig();
+
+    await expect(createQaSessionFromPayload({
+      payload: {
+        schemaVersion: 1,
+        title: 'Invalid',
+        generatedAt: '2026-05-12T09:00:00.000Z',
+        source: {},
+        warnings: [],
+        items: []
+      }
+    }, config)).rejects.toThrow('Invalid QA session payload');
+  });
+});
 
 describe('QA To Do MCP failed QA tools', () => {
   it('lists failed QA items by default and includes filed failures only when requested', () => {
@@ -210,6 +253,17 @@ function saveActualBehavior(
   }, '2026-05-12T09:01:30.000Z');
 }
 
+async function createTemporaryMcpConfig(): Promise<QaToDoMcpConfig> {
+  const root = await mkdtemp(join(tmpdir(), 'qa-to-do-mcp-'));
+  return {
+    inboxDir: join(root, 'inbox'),
+    processedDir: join(root, 'processed'),
+    quarantineDir: join(root, 'quarantine'),
+    databasePath: join(root, 'qa-to-do.sqlite'),
+    storageRoot: join(root, 'evidence')
+  };
+}
+
 const repo = {
   name: 'sample-repo',
   path: '/repos/sample-repo'
@@ -259,5 +313,24 @@ const scratchIssues: ScratchIssue[] = [
     parent: 'scratch-parent',
     acceptanceNotes: ['The scratch workflow renders current content.'],
     filePath: '/repos/sample-repo/.scratch/scratch-child.md'
+  }
+];
+
+const qaSessionIssues: BeadsIssue[] = [
+  {
+    id: 'parent-1',
+    title: 'QA parent',
+    status: 'closed',
+    priority: 1,
+    description: 'Parent issue',
+    dependencies: []
+  },
+  {
+    id: 'child-1',
+    title: 'Import QA sessions',
+    status: 'closed',
+    priority: 1,
+    description: '## Acceptance criteria\n- Imported sessions appear in the active checklist.',
+    dependencies: [{ issue_id: 'child-1', depends_on_id: 'parent-1', type: 'parent-child' }]
   }
 ];

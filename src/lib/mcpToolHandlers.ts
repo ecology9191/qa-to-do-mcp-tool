@@ -1,6 +1,11 @@
+import { importQaSessionInboxEntries } from './inboxImporter';
 import { draftBeadsFailureIssue, type BeadsFailureIssueContext, type BeadsFailureIssueDraft } from './beadsFailureIssue';
-import { type FailedQaItemRecord, type FailureScreenshot, type QaStorageRepository } from './qaStorage';
+import { writeQaSessionInboxEntry } from './mcpInbox';
+import type { QaToDoMcpConfig } from './mcpConfig';
+import type { QaSessionPayload } from './qaSession';
+import { type ActiveQaSession, type FailedQaItemRecord, type FailureScreenshot, QaStorageRepository, type QaTracker } from './qaStorage';
 import { draftScratchFailureIssue, type ScratchFailureIssueDraft } from './scratchFailureIssue';
+import { runToQaForBeadsParent, runToQaForParent, runToQaForScratchParent } from './toQa';
 
 export type QaToDoMcpToolName = 'qa_failed_items_list' | 'qa_failed_item_get' | 'qa_failed_item_mark_filed';
 
@@ -13,6 +18,40 @@ export interface QaToDoMcpToolDefinition {
     readonly required?: readonly string[];
     readonly additionalProperties: false;
   };
+}
+
+export interface QaSessionCreateInput {
+  readonly payload: unknown;
+  readonly correlationId?: string;
+  readonly createdAt?: string;
+}
+
+export interface RunToQaParentInput {
+  readonly parentIssueId: string;
+  readonly repoPath: string;
+  readonly repoName?: string;
+  readonly tracker?: QaTracker | 'auto';
+  readonly correlationId?: string;
+  readonly generatedAt?: string;
+}
+
+export interface QaSessionCreateResult {
+  readonly inboxEntryPath: string;
+  readonly importedSessionIds: readonly string[];
+  readonly quarantinedEntries: readonly string[];
+  readonly activeSession?: QaSessionSummary;
+}
+
+export interface RunToQaParentResult extends QaSessionCreateResult {}
+
+export interface QaSessionSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly tracker: QaTracker;
+  readonly repoPath: string;
+  readonly parentIssueId: string;
+  readonly itemCount: number;
+  readonly warnings: readonly string[];
 }
 
 export interface FailedQaItemsListResponse {
@@ -158,6 +197,70 @@ export const qaToDoMcpToolDefinitions: readonly QaToDoMcpToolDefinition[] = [
     }
   }
 ];
+
+export async function createQaSessionFromPayload(
+  input: QaSessionCreateInput,
+  config: QaToDoMcpConfig
+): Promise<QaSessionCreateResult> {
+  const payload = input.payload as QaSessionPayload;
+  const inboxEntryPath = await writeQaSessionInboxEntry(config.inboxDir, payload, {
+    correlationId: normalizeOptionalString(input.correlationId, 'correlationId'),
+    createdAt: normalizeOptionalString(input.createdAt, 'createdAt')
+  });
+  const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+
+  try {
+    const importResult = await importQaSessionInboxEntries(
+      [inboxEntryPath],
+      repository,
+      config.processedDir,
+      config.quarantineDir
+    );
+    return {
+      inboxEntryPath,
+      importedSessionIds: importResult.importedSessionIds,
+      quarantinedEntries: importResult.quarantinedEntries,
+      activeSession: summarizeSession(repository.getMostRecentActiveSession())
+    };
+  } finally {
+    repository.close();
+  }
+}
+
+export async function runToQaParent(input: RunToQaParentInput, config: QaToDoMcpConfig): Promise<RunToQaParentResult> {
+  assertNonEmptyString(input.parentIssueId, 'parentIssueId');
+  assertNonEmptyString(input.repoPath, 'repoPath');
+
+  const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+  const options = {
+    parentIssueId: input.parentIssueId,
+    repoPath: input.repoPath,
+    repoName: normalizeOptionalString(input.repoName, 'repoName'),
+    inboxDir: config.inboxDir,
+    processedDir: config.processedDir,
+    quarantineDir: config.quarantineDir,
+    repository,
+    correlationId: normalizeOptionalString(input.correlationId, 'correlationId'),
+    generatedAt: normalizeOptionalString(input.generatedAt, 'generatedAt')
+  };
+
+  try {
+    const result = input.tracker === 'beads'
+      ? await runToQaForBeadsParent(options)
+      : input.tracker === 'scratch'
+        ? await runToQaForScratchParent(options)
+        : await runToQaForParent(options);
+
+    return {
+      inboxEntryPath: result.inboxEntryPath,
+      importedSessionIds: result.importResult.importedSessionIds,
+      quarantinedEntries: result.importResult.quarantinedEntries,
+      activeSession: summarizeSession(result.activeSession)
+    };
+  } finally {
+    repository.close();
+  }
+}
 
 export function handleQaToDoMcpToolCall(
   repository: QaStorageRepository,
@@ -317,6 +420,37 @@ function toScreenshotEvidence(screenshot: FailureScreenshot): FailureScreenshotE
     localPath: screenshot.localPath,
     capturedAt: screenshot.capturedAt
   };
+}
+
+function summarizeSession(session: ActiveQaSession | undefined): QaSessionSummary | undefined {
+  if (!session) {
+    return undefined;
+  }
+
+  return {
+    id: session.id,
+    title: session.title,
+    tracker: session.tracker,
+    repoPath: session.repoPath,
+    parentIssueId: session.parentIssueId,
+    itemCount: session.items.length,
+    warnings: session.warnings
+  };
+}
+
+function normalizeOptionalString(value: string | undefined, name: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  assertNonEmptyString(value, name);
+  return value;
+}
+
+function assertNonEmptyString(value: unknown, name: string): asserts value is string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${name} must be a non-empty string.`);
+  }
 }
 
 function optionalRecord(value: unknown): Record<string, unknown> {

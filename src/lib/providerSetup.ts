@@ -292,9 +292,7 @@ function createFileOperation(path: string, read: OptionalFileRead, after: string
 }
 
 function createToQaCommandContent(appOpenCommand: readonly string[] | undefined): string {
-  const openInstruction = appOpenCommand
-    ? `After the MCP server creates the session, offer to open the app with \`${appOpenCommand.join(' ')}\`.\n`
-    : 'After the MCP server creates the session, tell the user they can open QA To Do to continue.\n';
+  void appOpenCommand;
 
   return `---
 description: Create a QA To Do session from completed Sandcastle/RALPH work
@@ -302,30 +300,41 @@ description: Create a QA To Do session from completed Sandcastle/RALPH work
 
 Use the \`to-qa\` skill for $ARGUMENTS.
 
-${openInstruction}
+When finished, report the created QA session and tell the user to open QA To Do to run the checks.
 `;
 }
 
 function createToQaSkillContent(mcpCommand: readonly string[]): string {
+  void mcpCommand;
+
   return `---
 name: to-qa
-description: Create a local QA To Do session from a Sandcastle/RALPH parent issue and completed child work.
+description: Create a local QA To Do session from a Sandcastle/RALPH parent issue.
 compatibility: opencode
 metadata:
   workflow: sandcastle-ralph-qa
 ---
 
+Use this skill when the user runs \`/to-qa <parent issue>\`.
+
 ## Workflow
 
-Use this skill when the user runs \`/to-qa <parent issue>\` or asks to create a QA To Do session from Sandcastle/RALPH output.
+1. Inspect the explicit parent issue in the current repo.
+2. Find completed source work only: closed/completed/done Beads child issues or structured .scratch child files.
+3. Read commits, changed files, and implementation context only as needed to write concrete QA checks.
+4. Create human-verifiable QA checks with title, runnable steps, expected result, source issue ID, source evidence, stable ID, and fingerprint.
+5. Call the \`qa-to-do\` MCP server to create the QA session.
+6. Report the session title, source parent, item count, and warnings.
 
-1. Inspect the explicit parent issue and completed/closed child work in the invoking repo.
-2. Generate human-verifiable QA checks with title, steps, expected result, source evidence, stable IDs, and fingerprints.
-3. Use the \`qa-to-do\` MCP server to write the validated QA session inbox message. The local MCP command is \`${mcpCommand.join(' ')}\`.
-4. Warn about incomplete children and fail clearly when there is no completed source work.
-5. Do not mutate pass/fail/archive/item state through MCP.
+## Rules
 
-No app-managed secrets are stored by this setup. Rely on user environment, repo config, tracker config, or provider-native auth.
+- Do not create checks from open/incomplete child work; warn about excluded children.
+- If there is no completed source work, fail clearly and do not create a session.
+- Do not write vague checks like "verify implementation" or "works as expected".
+- Do not mutate pass/fail/skip/edit/archive/delete state through MCP.
+- Do not file, close, or update tracker issues during \`/to-qa\`.
+- QA To Do owns checklist execution, evidence, pass/fail state, and archive.
+- No app-managed secrets are stored by this setup.
 `;
 }
 

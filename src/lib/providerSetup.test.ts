@@ -47,8 +47,8 @@ describe('provider setup', () => {
         'qa-to-do': { type: 'local', command: ['qa-to-do', 'mcp'], enabled: true }
       }
     }, null, 2)}\n`);
-    expect(plan.operations[1].after).toContain('Use the `to-qa` skill for $ARGUMENTS.');
-    expect(plan.operations[2].after).toContain('No app-managed secrets are stored by this setup.');
+    expect(plan.operations[1].after).toContain('When finished, report the created QA session');
+    expect(plan.operations[2].after).toContain('Do not mutate pass/fail/skip/edit/archive/delete state through MCP.');
 
     const result = await applyProviderSetupPlan(plan);
     const appliedConfig = JSON.parse(await readFile(configPath, 'utf8'));

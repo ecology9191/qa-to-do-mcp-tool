@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
   import {
     createInitialShellState,
     emptyStateCommand,
@@ -18,6 +19,21 @@
   interface InteractionSettings {
     passChimeMuted: boolean;
     passChimeVolume: number;
+  }
+
+  interface PendingFailureScreenshot extends FailureScreenshot {
+    readonly file?: File;
+  }
+
+  interface SaveFailureEvidenceResult {
+    readonly screenshots: readonly FailureScreenshot[];
+  }
+
+  interface PersistableFailureScreenshot {
+    readonly name: string;
+    readonly mimeType: string;
+    readonly sizeBytes: number;
+    readonly bytes: number[];
   }
 
   type ChecklistFilterStatus = 'all' | QaChecklistStatus;
@@ -48,8 +64,12 @@
   let skipReason = $state('');
   let failureComposerItemId: string | undefined = $state();
   let failureActualBehavior = $state('');
-  let failureScreenshots: FailureScreenshot[] = $state([]);
+  let failureScreenshots: PendingFailureScreenshot[] = $state([]);
   let manualFormOpen = $state(false);
+  let settingsOpen = $state(false);
+  let shortcutsOpen = $state(false);
+  let completionFeedback: string | undefined = $state();
+  let completionFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
   let manualTitle = $state('');
   let manualSteps = $state('');
   let manualExpectedResult = $state('');
@@ -74,10 +94,31 @@
   const deletedItems = $derived((activeSession?.items ?? []).filter((item) => item.deletedAt));
   const sourceIssueOptions = $derived([...new Set(visibleItems.map((item) => item.sourceIssueId))]);
   const filteredItems = $derived(visibleItems.filter(matchesFilters));
+  const activeItems = $derived(filteredItems.filter((item) => !isCompletedForDisplay(item)));
+  const completedItems = $derived(filteredItems.filter(isCompletedForDisplay));
 
   $effect.pre(() => {
     shellState = initialState;
   });
+
+  onMount(() => {
+    void loadPersistedShellState();
+  });
+
+  onDestroy(() => {
+    if (completionFeedbackTimer) clearTimeout(completionFeedbackTimer);
+  });
+
+  async function loadPersistedShellState(): Promise<void> {
+    if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      shellState = await invoke<AppShellState>('load_shell_state');
+    } catch (error) {
+      console.error('Failed to load QA To Do sessions from local storage.', error);
+    }
+  }
 
   function matchesFilters(item: QaChecklistItem): boolean {
     const query = searchQuery.trim().toLowerCase();
@@ -130,12 +171,12 @@
   }
 
   function selectedItem(): QaChecklistItem | undefined {
-    return filteredItems[Math.min(selectedIndex, Math.max(filteredItems.length - 1, 0))];
+    return activeItems[Math.min(selectedIndex, Math.max(activeItems.length - 1, 0))];
   }
 
   function moveSelection(delta: number): void {
-    if (filteredItems.length === 0) return;
-    selectedIndex = Math.max(0, Math.min(filteredItems.length - 1, selectedIndex + delta));
+    if (activeItems.length === 0) return;
+    selectedIndex = Math.max(0, Math.min(activeItems.length - 1, selectedIndex + delta));
   }
 
   function togglePass(item: QaChecklistItem): void {
@@ -147,7 +188,17 @@
     item.status = 'passed';
     item.skipReason = undefined;
     recordHistory(item, 'passed');
+    showCompletionFeedback(item.title);
     playPassChime(interactionSettings);
+  }
+
+  function showCompletionFeedback(title: string): void {
+    if (completionFeedbackTimer) clearTimeout(completionFeedbackTimer);
+    completionFeedback = title;
+    completionFeedbackTimer = setTimeout(() => {
+      completionFeedback = undefined;
+      completionFeedbackTimer = undefined;
+    }, 1800);
   }
 
   function failItem(item: QaChecklistItem): void {
@@ -179,12 +230,13 @@
     return file.type.startsWith('image/');
   }
 
-  function toPendingFailureScreenshot(file: File): FailureScreenshot {
+  function toPendingFailureScreenshot(file: File): PendingFailureScreenshot {
     return {
       name: file.name,
       mimeType: file.type,
       sizeBytes: file.size,
-      localReference: `pending-local-copy:${file.name}`
+      localReference: `pending-local-copy:${file.name}`,
+      file
     };
   }
 
@@ -193,16 +245,64 @@
     attachScreenshotFiles(event.clipboardData?.files ?? null);
   }
 
-  function saveFailureEvidence(item: QaChecklistItem): void {
+  async function saveFailureEvidence(item: QaChecklistItem): Promise<void> {
     const actualBehavior = failureActualBehavior.trim();
     if (actualBehavior.length === 0 || item.status !== 'failed') return;
+    const screenshots = await persistFailureEvidence(item, actualBehavior);
+
     item.failureEvidence = {
       actualBehavior,
-      screenshots: failureScreenshots
+      screenshots
     };
     item.note = actualBehavior;
     recordHistory(item, 'failed', actualBehavior);
     resetFailureComposer();
+  }
+
+  async function persistFailureEvidence(item: QaChecklistItem, actualBehavior: string): Promise<FailureScreenshot[]> {
+    if (!isTauriRuntime() || activeSession === undefined) {
+      return failureScreenshots.map(toFailureScreenshot);
+    }
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<SaveFailureEvidenceResult>('save_failure_evidence', {
+        sessionId: activeSession.id,
+        itemId: item.id,
+        actualBehavior,
+        screenshots: await Promise.all(failureScreenshots.filter(hasSourceFile).map(toPersistableScreenshot))
+      });
+      return result.screenshots.map(toFailureScreenshot);
+    } catch (error) {
+      console.error('Failed to persist local QA failure evidence.', error);
+      return failureScreenshots.map(toFailureScreenshot);
+    }
+  }
+
+  function isTauriRuntime(): boolean {
+    return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  }
+
+  function hasSourceFile(screenshot: PendingFailureScreenshot): screenshot is PendingFailureScreenshot & { readonly file: File } {
+    return screenshot.file !== undefined;
+  }
+
+  async function toPersistableScreenshot(screenshot: PendingFailureScreenshot & { readonly file: File }): Promise<PersistableFailureScreenshot> {
+    return {
+      name: screenshot.name,
+      mimeType: screenshot.mimeType,
+      sizeBytes: screenshot.sizeBytes,
+      bytes: Array.from(new Uint8Array(await screenshot.file.arrayBuffer()))
+    };
+  }
+
+  function toFailureScreenshot(screenshot: FailureScreenshot): FailureScreenshot {
+    return {
+      name: screenshot.name,
+      mimeType: screenshot.mimeType,
+      sizeBytes: screenshot.sizeBytes,
+      localReference: screenshot.localReference
+    };
   }
 
   function resetFailureComposer(): void {
@@ -282,7 +382,7 @@
 
     activeSession.items = [...activeSession.items, item];
     refreshSessionItemCount(activeSession);
-    selectedIndex = filteredItems.length;
+    selectedIndex = activeItems.length;
     expandedItemId = item.id;
     resetManualForm();
   }
@@ -343,6 +443,10 @@
     return item.status === 'passed' || item.status === 'failed-filed' || (item.status === 'skipped' && Boolean(item.skipReason?.trim()));
   }
 
+  function isCompletedForDisplay(item: QaChecklistItem): boolean {
+    return item.status === 'passed' || item.status === 'failed-filed' || item.status === 'skipped';
+  }
+
   function archiveBlockedMessage(session: NonNullable<typeof activeSession>): string {
     const unresolvedCount = (session.items ?? []).filter((item) => !item.deletedAt && !isTerminalForArchive(item)).length;
     if (unresolvedCount === 0) return 'Ready for manual app-only archive. No tracker state will be changed.';
@@ -368,7 +472,7 @@
   }
 
   function handleGlobalKeydown(event: KeyboardEvent): void {
-    if (isTypingTarget(event.target) || event.defaultPrevented || visibleItems.length === 0) return;
+    if (isTypingTarget(event.target) || event.defaultPrevented || activeItems.length === 0) return;
 
     const item = selectedItem();
     if (!item) return;
@@ -440,6 +544,12 @@
     };
     const label = labels[event.action];
     return event.detail ? `${label}: ${event.detail}` : label;
+  }
+
+  function formatScreenshotReference(screenshot: FailureScreenshot): string {
+    return screenshot.localReference.startsWith('pending-local-copy:')
+      ? screenshot.name
+      : `${screenshot.name} (${screenshot.localReference})`;
   }
 
   function updatePassChimeMuted(event: Event): void {
@@ -524,11 +634,7 @@
 </svelte:head>
 
 <main class="shell" aria-labelledby="app-title">
-  <header class="hero">
-    <p class="eyebrow">Sandcastle / RALPH</p>
-    <h1 id="app-title">QA To Do</h1>
-    <p class="lede">A local-first checklist for human QA after agent-generated software work.</p>
-  </header>
+  <h1 id="app-title" class="sr-only">QA To Do</h1>
 
   {#if shellState.sessions.length === 0}
     <section class="empty-state" aria-labelledby="empty-title">
@@ -560,15 +666,21 @@
         {#if activeSession.warnings.length > 0}
           <span>{activeSession.warnings.length} warning{activeSession.warnings.length === 1 ? '' : 's'}</span>
         {/if}
-        <button
-          type="button"
-          disabled={!isArchiveEligible(activeSession)}
-          onclick={() => archiveSession(activeSession)}
-          aria-label={`Archive session ${activeSession.title}`}
-        >
-          Archive session
-        </button>
-        <button type="button" onclick={() => softDeleteSession(activeSession)} aria-label={`Delete session ${activeSession.title}`}>Delete session</button>
+        <details class="session-menu">
+          <summary>Session actions</summary>
+          <button class="action-button button-utility" type="button" onclick={() => (shortcutsOpen = !shortcutsOpen)}>Shortcuts</button>
+          <button class="action-button button-utility" type="button" onclick={() => (settingsOpen = !settingsOpen)}>Settings</button>
+          <button
+            class="action-button button-archive"
+            type="button"
+            disabled={!isArchiveEligible(activeSession)}
+            onclick={() => archiveSession(activeSession)}
+            aria-label={`Archive session ${activeSession.title}`}
+          >
+            Archive session
+          </button>
+          <button class="action-button button-danger" type="button" onclick={() => softDeleteSession(activeSession)} aria-label={`Delete session ${activeSession.title}`}>Delete session</button>
+        </details>
       </div>
       <p class="archive-guidance">{archiveBlockedMessage(activeSession)}</p>
       {#if activeSession.warnings.length > 0}
@@ -579,68 +691,52 @@
         </ul>
       {/if}
       {#if activeSession.items && activeSession.items.length > 0}
-        <div class="shortcut-preview" aria-label="Keyboard shortcuts">
-          <button type="button">j/k Navigate</button>
-          <button type="button">Space Pass/unpass</button>
-          <button type="button">f Fail</button>
-          <button type="button">s Skip</button>
-          <button type="button">e Edit</button>
-          <button type="button">/ Search</button>
-          <button type="button">Enter Expand</button>
-          <button type="button">a Archive</button>
-        </div>
-
-        <section class="interaction-settings" aria-labelledby="interaction-settings-title">
-          <div>
-            <p class="section-kicker">Interaction settings</p>
-            <h3 id="interaction-settings-title">Pass chime</h3>
-            <p>Generated in the browser with Web Audio. No sound files are bundled.</p>
+        {#if shortcutsOpen}
+          <div class="shortcut-preview" aria-label="Keyboard shortcuts">
+            <button class="action-button button-shortcut" type="button">j/k Navigate</button>
+            <button class="action-button button-shortcut" type="button">Space Pass/unpass</button>
+            <button class="action-button button-shortcut" type="button">f Fail</button>
+            <button class="action-button button-shortcut" type="button">s Skip</button>
+            <button class="action-button button-shortcut" type="button">e Edit</button>
+            <button class="action-button button-shortcut" type="button">/ Search</button>
+            <button class="action-button button-shortcut" type="button">Enter Expand</button>
+            <button class="action-button button-shortcut" type="button">a Archive</button>
           </div>
-          <label class="mute-control">
-            <input
-              type="checkbox"
-              checked={interactionSettings.passChimeMuted}
-              onchange={updatePassChimeMuted}
-              aria-label="Mute pass chime"
-            />
-            Mute
-          </label>
-          <label>
-            Volume
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={passChimeVolumePercent}
-              oninput={updatePassChimeVolume}
-              aria-label="Pass chime volume"
-            />
-            <span>{passChimeVolumePercent}%</span>
-          </label>
-        </section>
+        {/if}
 
-        <section class="manual-item" aria-labelledby="manual-item-title">
-          <div>
-            <p class="section-kicker">Coverage gaps</p>
-            <h3 id="manual-item-title">Manual QA items</h3>
-            <p>Add lightweight reviewer checks without mixing them up with generated coverage.</p>
-          </div>
-          {#if manualFormOpen}
-            <div class="manual-form">
-              <label>Manual title<input bind:value={manualTitle} aria-label="Manual title" /></label>
-              <label>Manual steps<textarea bind:value={manualSteps} aria-label="Manual steps"></textarea></label>
-              <label>Manual expected result<textarea bind:value={manualExpectedResult} aria-label="Manual expected result"></textarea></label>
-              <label>Manual notes<textarea bind:value={manualNote} aria-label="Manual notes"></textarea></label>
-              <button type="button" onclick={saveManualItem}>Save manual item</button>
+        {#if settingsOpen}
+          <section class="interaction-settings" aria-labelledby="interaction-settings-title">
+            <div>
+              <p class="section-kicker">Settings</p>
+              <h3 id="interaction-settings-title">Pass chime</h3>
             </div>
-          {:else}
-            <button type="button" onclick={() => (manualFormOpen = true)}>Add manual item</button>
-          {/if}
-        </section>
+            <label class="mute-control">
+              <input
+                type="checkbox"
+                checked={interactionSettings.passChimeMuted}
+                onchange={updatePassChimeMuted}
+                aria-label="Mute pass chime"
+              />
+              Mute
+            </label>
+            <label>
+              Volume
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={passChimeVolumePercent}
+                oninput={updatePassChimeVolume}
+                aria-label="Pass chime volume"
+              />
+              <span>{passChimeVolumePercent}%</span>
+            </label>
+          </section>
+        {/if}
 
         <div class="checklist-tools" aria-label="Checklist filters">
           <label>
-            Search checklist
+            <span class="field-label">Search checklist</span>
             <input
               id="checklist-search"
               bind:value={searchQuery}
@@ -649,7 +745,7 @@
             />
           </label>
           <label>
-            Status
+            <span class="field-label">Status</span>
             <select bind:value={statusFilter} aria-label="Status filter">
               <option value="all">All statuses</option>
               <option value="pending">Pending</option>
@@ -660,7 +756,7 @@
             </select>
           </label>
           <label>
-            Source issue
+            <span class="field-label">Source issue</span>
             <select bind:value={sourceFilter} aria-label="Source issue filter">
               <option value="all">All source issues</option>
               {#each sourceIssueOptions as sourceIssueId}
@@ -668,10 +764,23 @@
               {/each}
             </select>
           </label>
+          <button class="action-button button-add checklist-tools__add" type="button" onclick={() => (manualFormOpen = true)}>Add manual item</button>
         </div>
 
+        {#if manualFormOpen}
+          <section class="manual-item" aria-label="Manual QA items">
+            <div class="manual-form">
+              <label>Manual title<input bind:value={manualTitle} aria-label="Manual title" /></label>
+              <label>Manual steps<textarea bind:value={manualSteps} aria-label="Manual steps"></textarea></label>
+              <label>Manual expected result<textarea bind:value={manualExpectedResult} aria-label="Manual expected result"></textarea></label>
+              <label>Manual notes<textarea bind:value={manualNote} aria-label="Manual notes"></textarea></label>
+              <button class="action-button button-save" type="button" onclick={saveManualItem}>Save manual item</button>
+            </div>
+          </section>
+        {/if}
+
         <div class="checklist" role="table" aria-label="QA checklist">
-          {#each filteredItems as item, index (item.id)}
+          {#each activeItems as item, index (item.id)}
             <div
               role="row"
               tabindex="-1"
@@ -688,9 +797,12 @@
                   aria-label={`Mark ${item.title} passed`}
                   onclick={() => togglePass(item)}
                 >
-                  <span aria-hidden="true">{item.status === 'passed' ? '✓' : ''}</span>
+                  {#if item.status === 'passed'}
+                    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                      <path d="M20.3 6.3 9.7 16.9l-5-5" />
+                    </svg>
+                  {/if}
                 </button>
-                <span class="source-badge">{item.sourceIssueId}</span>
                 {#if item.sourceType === 'manual'}
                   <span class="manual-badge">Manual</span>
                 {/if}
@@ -700,12 +812,14 @@
                 {/if}
                 <span class={`item-state item-state--${item.status}`}>{item.status}</span>
               </div>
-              <div class="row-actions">
-                <button type="button" onclick={() => failItem(item)} aria-label={`Fail ${item.title}`}>Fail</button>
-                <button type="button" onclick={() => startSkip(item)} aria-label={`Skip ${item.title}`}>Skip</button>
-                <button type="button" onclick={() => startEdit(item)} aria-label={`Edit ${item.title}`}>Edit</button>
-                <button type="button" onclick={() => toggleHistory(item)} aria-label={`History ${item.title}`}>History</button>
-                <button type="button" onclick={() => softDeleteItem(item)} aria-label={`Delete item ${item.title}`}>Delete</button>
+              <div class="row-actions" aria-label={`Actions for ${item.title}`}>
+                <button class="action-button icon-button button-danger" type="button" onclick={() => failItem(item)} aria-label={`Fail ${item.title}`} title="Fail">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                    <path d="M12 3.2 21.4 20H2.6L12 3.2Z" />
+                    <path d="M12 8.2v5.7" />
+                    <path d="M12 17.2h.01" />
+                  </svg>
+                </button>
               </div>
 
               {#if expandedItemId === item.id}
@@ -716,9 +830,22 @@
                       <label>Steps<textarea bind:value={editSteps} aria-label="Steps"></textarea></label>
                       <label>Expected result<textarea bind:value={editExpectedResult} aria-label="Expected result"></textarea></label>
                       <label>Notes<textarea bind:value={editNote} aria-label="Notes"></textarea></label>
-                      <button type="button" onclick={() => saveEdit(item)}>Save edit</button>
+                      <button class="action-button button-save" type="button" onclick={() => saveEdit(item)}>Save edit</button>
                     </div>
                   {:else}
+                    <section class="item-actions">
+                      <h3>Actions</h3>
+                      <div class="detail-actions">
+                        <button class="action-button button-skip" type="button" onclick={() => startSkip(item)} aria-label={`Skip ${item.title}`}>Skip</button>
+                        <button class="action-button button-edit" type="button" onclick={() => startEdit(item)} aria-label={`Edit ${item.title}`}>Edit</button>
+                        <button class="action-button button-history" type="button" onclick={() => toggleHistory(item)} aria-label={`History ${item.title}`}>History</button>
+                        <button class="action-button button-danger" type="button" onclick={() => softDeleteItem(item)} aria-label={`Delete item ${item.title}`}>Delete</button>
+                      </div>
+                    </section>
+                    <section>
+                      <h3>Source issue</h3>
+                      <p><code>{item.sourceIssueId}</code></p>
+                    </section>
                     <section>
                       <h3>Steps</h3>
                       <ol>
@@ -746,7 +873,7 @@
                         <h3>Failure evidence</h3>
                         <p>Failed: {item.failureEvidence.actualBehavior}</p>
                         {#if item.failureEvidence.screenshots.length > 0}
-                          <p>Screenshots: {item.failureEvidence.screenshots.map((screenshot) => screenshot.name).join(', ')}</p>
+                          <p>Screenshots: {item.failureEvidence.screenshots.map(formatScreenshotReference).join(', ')}</p>
                         {/if}
                       </section>
                     {/if}
@@ -798,11 +925,11 @@
                       {#if failureScreenshots.length > 0}
                         <ul aria-label="Attached screenshots">
                           {#each failureScreenshots as screenshot}
-                            <li>{screenshot.name}</li>
+                            <li>{formatScreenshotReference(screenshot)}</li>
                           {/each}
                         </ul>
                       {/if}
-                      <button type="button" disabled={failureActualBehavior.trim().length === 0} onclick={() => saveFailureEvidence(item)}>
+                      <button class="action-button button-danger" type="button" disabled={failureActualBehavior.trim().length === 0} onclick={() => void saveFailureEvidence(item)}>
                         Save failure evidence
                       </button>
                     </section>
@@ -811,7 +938,7 @@
                   {#if skipItemId === item.id}
                     <div class="skip-form">
                       <label>Skip reason<input bind:value={skipReason} aria-label="Skip reason" /></label>
-                      <button type="button" onclick={() => saveSkip(item)}>Save skip</button>
+                      <button class="action-button button-skip" type="button" onclick={() => saveSkip(item)}>Save skip</button>
                     </div>
                   {/if}
 
@@ -835,6 +962,75 @@
           {/each}
         </div>
 
+        {#if completedItems.length > 0}
+          <details class="completed-panel">
+            <summary>Completed ({completedItems.length})</summary>
+            <div class="checklist completed-checklist" role="table" aria-label="Completed QA items">
+              {#each completedItems as item (item.id)}
+                <div
+                  role="row"
+                  tabindex="-1"
+                  aria-label={`${item.sourceIssueId} ${item.title} ${item.status}`}
+                  class="checklist-row is-completed"
+                  class:is-failed={item.status === 'failed'}
+                >
+                  <div class="checklist-row__summary">
+                    <button
+                      class={`status-square status-square--${item.status}`}
+                      type="button"
+                      aria-label={`Mark ${item.title} passed`}
+                      onclick={() => togglePass(item)}
+                    >
+                      {#if item.status === 'passed'}
+                        <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                          <path d="M20.3 6.3 9.7 16.9l-5-5" />
+                        </svg>
+                      {/if}
+                    </button>
+                    {#if item.sourceType === 'manual'}
+                      <span class="manual-badge">Manual</span>
+                    {/if}
+                    <button class="row-title" type="button" onclick={() => toggleExpanded(item)}>{item.title}</button>
+                    <span class={`item-state item-state--${item.status}`}>{item.status}</span>
+                  </div>
+
+                  {#if expandedItemId === item.id}
+                    <div class="item-detail">
+                      <section class="item-actions">
+                        <h3>Actions</h3>
+                        <div class="detail-actions">
+                          <button class="action-button button-edit" type="button" onclick={() => startEdit(item)} aria-label={`Edit ${item.title}`}>Edit</button>
+                          <button class="action-button button-history" type="button" onclick={() => toggleHistory(item)} aria-label={`History ${item.title}`}>History</button>
+                          <button class="action-button button-danger" type="button" onclick={() => softDeleteItem(item)} aria-label={`Delete item ${item.title}`}>Delete</button>
+                        </div>
+                      </section>
+                      <section>
+                        <h3>Source issue</h3>
+                        <p><code>{item.sourceIssueId}</code></p>
+                      </section>
+                      {#if item.skipReason}<p>Skipped: {item.skipReason}</p>{/if}
+                      {#if historyItemId === item.id}
+                        <section class="history-panel" aria-label={`State history for ${item.title}`}>
+                          <h3>State history</h3>
+                          {#if item.history.length === 0}
+                            <p>No state changes yet.</p>
+                          {:else}
+                            <ol>
+                              {#each item.history as event}
+                                <li>{formatHistory(event)}</li>
+                              {/each}
+                            </ol>
+                          {/if}
+                        </section>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </details>
+        {/if}
+
         {#if deletedItems.length > 0}
           <section class="restore-panel" aria-label="Deleted QA items">
             <h3>Deleted QA items</h3>
@@ -845,7 +1041,7 @@
                   {#if item.sourceType === 'manual'}
                     <span class="manual-badge">Manual</span>
                   {/if}
-                  <button type="button" onclick={() => restoreItem(item)} aria-label={`Restore item ${item.title}`}>Restore</button>
+                  <button class="action-button button-success" type="button" onclick={() => restoreItem(item)} aria-label={`Restore item ${item.title}`}>Restore</button>
                 </li>
               {/each}
             </ul>
@@ -906,83 +1102,143 @@
         {#each deletedSessions as session (session.id)}
           <li>
             <span>{session.title}</span>
-            <button type="button" onclick={() => restoreSession(session)} aria-label={`Restore session ${session.title}`}>Restore</button>
+            <button class="action-button button-success" type="button" onclick={() => restoreSession(session)} aria-label={`Restore session ${session.title}`}>Restore</button>
           </li>
         {/each}
       </ul>
     </section>
   {/if}
 
-  <section class="health" aria-labelledby="health-title">
-    <div class="section-heading">
-      <p class="section-kicker">Read-only setup health</p>
-      <h2 id="health-title">Prerequisites</h2>
+  {#if completionFeedback}
+    <div class="completion-feedback" role="status" aria-live="polite">
+      <span class="completion-feedback__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M20.3 6.3 9.7 16.9l-5-5" />
+        </svg>
+      </span>
+      <span>Verified</span>
     </div>
+  {/if}
 
-    <div class="health-grid">
-      {#each shellState.configHealth as item (item.id)}
-        <article class="health-card" aria-labelledby={`${item.id}-label`}>
-          <div class="health-card__topline">
-            <h3 id={`${item.id}-label`}>{item.label}</h3>
-            <span class={`status status--${item.state}`}>{healthLabels[item.state]}</span>
-          </div>
-          <p>{item.summary}</p>
-        </article>
-      {/each}
-    </div>
-  </section>
+  <aside class="health-stack" aria-label="Setup health">
+    {#each shellState.configHealth as item (item.id)}
+      <div class="health-stack__item">
+        <span class={`health-dot health-dot--${item.state}`} aria-hidden="true"></span>
+        <span class="health-stack__label" id={`${item.id}-label`}>{item.label}</span>
+      </div>
+    {/each}
+  </aside>
 </main>
 
 <style>
+  /* ── Layout helpers ── */
+
   .shortcut-preview,
   .interaction-settings,
   .manual-item,
   .archive-panel,
-  .checklist-tools,
-  .checklist-row__summary,
-  .row-actions {
+  .row-actions,
+  .detail-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.4rem;
     align-items: center;
   }
 
-  .shortcut-preview {
-    margin-top: 1rem;
+  .checklist-row__summary {
+    display: flex;
+    min-width: 0;
+    max-width: 100%;
+    align-items: center;
+    gap: 0.4rem;
+    overflow: hidden;
+    white-space: nowrap;
   }
 
+  .shortcut-preview {
+    margin-top: 0.75rem;
+    gap: 0.3rem;
+  }
+
+  /* ── Sections (dark cards) ── */
+
   .interaction-settings {
-    margin-top: 1rem;
+    margin-top: 0.75rem;
     padding: 0.75rem;
-    border: 1px solid #1f1f1f;
+    border-radius: 0.65rem;
+    background: var(--bg-raised);
     justify-content: space-between;
   }
 
   .manual-item,
-  .archive-panel,
-  .restore-panel {
-    margin-top: 1rem;
+  .restore-panel,
+  .completed-panel {
+    margin-top: 0.75rem;
     padding: 0.75rem;
-    border: 1px solid #1f1f1f;
+    border-radius: 0.65rem;
+    background: var(--bg-raised);
+  }
+
+  .completed-panel summary,
+  .session-menu summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .session-menu {
+    display: inline-flex;
+    position: relative;
+  }
+
+  .session-menu summary {
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    background: var(--bg-raised);
+    padding: 0.28rem 0.65rem;
+  }
+
+  .session-menu[open] {
+    display: grid;
+    gap: 0.4rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.75rem;
+    background: var(--bg-raised);
+    padding: 0.45rem;
+  }
+
+  .session-menu[open] summary {
+    margin-bottom: 0.1rem;
+    border-color: transparent;
+    background: transparent;
+    padding: 0.1rem 0.2rem;
+  }
+
+  .archive-panel {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    border-radius: 0.65rem;
+    background: var(--bg-raised);
   }
 
   .interaction-settings h3,
   .interaction-settings p,
-  .manual-item h3,
   .archive-panel h2,
   .archive-panel h3,
-  .archive-panel p,
-  .manual-item p {
+  .archive-panel p {
     margin: 0;
+    color: var(--text-secondary);
   }
 
   .archive-guidance {
     margin: 0;
-    color: #4f4a44;
+    color: var(--text-tertiary);
+    font-size: 0.85rem;
   }
 
-  .shortcut-preview button,
-  .row-actions button,
+  /* ── Form inputs (dark) ── */
+
   .interaction-settings input,
   .checklist-tools input,
   .archive-panel input,
@@ -994,40 +1250,240 @@
   .skip-form input,
   .failure-composer textarea,
   .failure-composer input {
-    border: 1px solid #1f1f1f;
-    background: #fff;
-    color: #111;
+    border: 1px solid var(--border-default);
+    border-radius: 0.4rem;
+    background: var(--bg-raised);
+    color: var(--text-primary);
+    padding: 0.4rem 0.55rem;
   }
 
-  .shortcut-preview button,
-  .row-actions button {
-    padding: 0.25rem 0.5rem;
+  .interaction-settings input:focus,
+  .checklist-tools input:focus,
+  .archive-panel input:focus,
+  .checklist-tools select:focus,
+  .edit-form input:focus,
+  .edit-form textarea:focus,
+  .manual-form input:focus,
+  .manual-form textarea:focus,
+  .skip-form input:focus,
+  .failure-composer textarea:focus,
+  .failure-composer input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: var(--accent);
   }
+
+  .checklist-tools select {
+    color-scheme: dark;
+    appearance: none;
+    border: 1px solid var(--border-default);
+    border-radius: 0.4rem;
+    background:
+      linear-gradient(45deg, transparent 50%, var(--text-tertiary) 50%) calc(100% - 0.9rem) 50% / 0.32rem 0.32rem no-repeat,
+      linear-gradient(135deg, var(--text-tertiary) 50%, transparent 50%) calc(100% - 0.68rem) 50% / 0.32rem 0.32rem no-repeat,
+      var(--bg-raised);
+    color: var(--text-primary);
+    padding: 0.4rem 1.5rem 0.4rem 0.55rem;
+  }
+
+  .checklist-tools select option {
+    background: var(--bg-raised);
+    color: var(--text-primary);
+  }
+
+  .mute-control {
+    color: var(--text-secondary);
+  }
+
+  /* ── Action buttons ── */
+
+  .action-button {
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    background: var(--bg-raised);
+    color: var(--text-secondary);
+    padding: 0.25rem 0.6rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+
+  .action-button:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+  }
+
+  .action-button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .button-success {
+    border-color: var(--success-border);
+    background: var(--success-bg);
+    color: var(--success);
+  }
+
+  .button-success:hover {
+    background: rgba(102, 187, 106, 0.2);
+  }
+
+  .button-danger {
+    border-color: var(--danger-border);
+    background: var(--danger-bg);
+    color: var(--danger);
+  }
+
+  .button-danger:hover {
+    background: rgba(239, 83, 80, 0.2);
+  }
+
+  .button-skip {
+    border-color: var(--warning-border);
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+
+  .button-skip:hover {
+    background: rgba(255, 167, 38, 0.2);
+  }
+
+  .button-edit,
+  .button-save {
+    border-color: var(--info-border);
+    background: var(--info-bg);
+    color: var(--info);
+  }
+
+  .button-edit:hover,
+  .button-save:hover {
+    background: rgba(66, 165, 245, 0.2);
+  }
+
+  .button-add {
+    border-color: rgba(122, 167, 255, 0.32);
+    background: rgba(122, 167, 255, 0.12);
+    color: var(--accent);
+  }
+
+  .button-add:hover {
+    background: rgba(122, 167, 255, 0.18);
+  }
+
+  .button-archive,
+  .button-history,
+  .button-utility {
+    border-color: var(--border-default);
+    background: transparent;
+    color: var(--text-secondary);
+  }
+
+  .button-archive:hover,
+  .button-history:hover,
+  .button-utility:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .button-shortcut {
+    border-color: var(--border-subtle);
+    background: var(--bg-surface);
+    color: var(--text-tertiary);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.5rem;
+    cursor: default;
+  }
+
+  .icon-button {
+    display: inline-grid;
+    width: 1.55rem;
+    height: 1.55rem;
+    place-items: center;
+    padding: 0;
+    font-size: 0.72rem;
+    line-height: 1;
+  }
+
+  .icon-button svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+  }
+
+  .icon-button svg path:first-child {
+    fill: currentColor;
+    fill-opacity: 0.12;
+  }
+
+  /* ── Checklist tools ── */
 
   .checklist-tools {
-    margin: 1rem 0;
+    display: grid;
+    grid-template-columns: minmax(14rem, 1fr) minmax(8rem, auto) minmax(10rem, auto) auto;
+    gap: 0.55rem;
+    align-items: end;
+    margin: 0.75rem 0;
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.8rem;
+    background: rgba(32, 38, 49, 0.58);
+    padding: 0.65rem;
   }
+
+  .checklist-tools label {
+    min-width: 0;
+  }
+
+  .checklist-tools input,
+  .checklist-tools select {
+    width: 100%;
+  }
+
+  .field-label {
+    margin-bottom: 0.15rem;
+  }
+
+  .checklist-tools__add {
+    align-self: end;
+    white-space: nowrap;
+  }
+
+  /* ── Archive panel ── */
 
   .archive-panel {
     display: grid;
-    gap: 0.75rem;
-    margin-bottom: 2rem;
-    background: #fffaf2;
+    gap: 0.6rem;
+    margin-bottom: 1.5rem;
   }
 
   .archive-results {
     display: grid;
-    gap: 0.75rem;
+    gap: 0.5rem;
   }
 
   .archive-card {
-    border-top: 1px solid #d8d8d8;
-    padding-top: 0.75rem;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 0.6rem;
   }
 
   .archive-card ul {
     margin-bottom: 0;
+    color: var(--text-secondary);
   }
+
+  .archive-card h3 {
+    color: var(--text-primary);
+  }
+
+  .archive-card p {
+    font-size: 0.9rem;
+  }
+
+  /* ── Labels ── */
 
   .checklist-tools label,
   .archive-panel label,
@@ -1037,99 +1493,411 @@
   .skip-form label,
   .failure-composer label {
     display: grid;
-    gap: 0.25rem;
-    font-size: 0.8rem;
+    gap: 0.2rem;
+    font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    color: var(--text-secondary);
   }
 
+  /* ── Checklist rows (tasks.org style) ── */
+
   .checklist-row {
-    border-top: 1px solid #d8d8d8;
-    padding: 0.55rem 0;
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 0.6rem;
+    align-items: start;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 0.5rem 0.6rem;
+    margin: 0 -0.6rem;
+    border-radius: 0.5rem;
+    transition: background 0.1s;
+  }
+
+  .checklist-row:first-child {
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .checklist-row:hover,
+  .checklist-row.is-selected {
+    background: var(--bg-raised);
   }
 
   .checklist-row.is-selected {
-    outline: 2px solid #111;
-    outline-offset: 2px;
+    border-left: 3px solid var(--accent);
+    padding-left: calc(0.6rem - 3px);
+  }
+
+  .checklist-row.is-failed {
+    border-left: 3px solid var(--danger);
+    padding-left: calc(0.6rem - 3px);
+  }
+
+  .row-actions {
+    grid-column: 2;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+  }
+
+  .item-detail {
+    grid-column: 1 / -1;
   }
 
   .checklist-row.is-failed .item-state {
-    color: #b00020;
+    color: var(--danger);
   }
 
+  .checklist-row.is-completed {
+    opacity: 0.72;
+  }
+
+  /* ── Status checkbox ── */
+
   .status-square {
-    width: 1.1rem;
-    height: 1.1rem;
-    border: 2px solid #111;
-    background: #fff;
+    width: 1.25rem;
+    height: 1.25rem;
+    border: 2px solid var(--border-default);
+    border-radius: 0.32rem;
+    background: #ffffff;
+    color: var(--text-inverse);
     display: inline-grid;
     place-items: center;
     line-height: 1;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .status-square svg {
+    width: 1rem;
+    height: 1rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 4;
+  }
+
+  .status-square:hover {
+    border-color: var(--success);
+    background: #ffffff;
   }
 
   .status-square--passed {
-    background: #111;
-    color: #fff;
+    border-color: var(--success);
+    background: var(--success);
+    color: #ffffff;
   }
+
+  .status-square--passed:hover {
+    background: var(--success);
+  }
+
+  .status-square--pending {
+    border-color: var(--border-strong);
+    background: #ffffff;
+  }
+
+  .status-square--failed,
+  .status-square--failed-filed {
+    border-color: var(--danger);
+    background: #ffffff;
+  }
+
+  .status-square--skipped {
+    border-color: var(--warning);
+    background: #ffffff;
+  }
+
+  /* ── Badges & chips ── */
 
   .source-badge,
   .low-confidence,
   .manual-badge,
   .item-state {
-    border: 1px solid #1f1f1f;
-    padding: 0.1rem 0.35rem;
-    font-size: 0.78rem;
+    flex-shrink: 0;
+    border: 1px solid var(--border-default);
+    border-radius: 0.25rem;
+    padding: 0.08rem 0.35rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-raised);
+  }
+
+  .item-state--passed {
+    border-color: var(--success-border);
+    background: var(--success-bg);
+    color: var(--success);
+  }
+
+  .item-state--failed {
+    border-color: var(--danger-border);
+    background: var(--danger-bg);
+    color: var(--danger);
+  }
+
+  .item-state--failed-filed {
+    border-color: var(--danger-border);
+    background: var(--danger-bg);
+    color: var(--danger);
+  }
+
+  .item-state--skipped {
+    border-color: var(--warning-border);
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+
+  .item-state--pending {
+    border-color: var(--warning-border);
+    background: var(--warning-bg);
+    color: var(--warning);
   }
 
   .low-confidence {
     border-style: dashed;
+    border-color: var(--warning-border);
+    color: var(--warning);
   }
 
   .manual-badge {
-    background: #111;
-    color: #fff;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--text-inverse);
   }
 
+  .source-badge {
+    background: var(--bg-surface);
+    border-color: var(--border-default);
+    color: var(--text-tertiary);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 0.68rem;
+    font-weight: 500;
+  }
+
+  /* ── Row title ── */
+
   .row-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     border: 0;
     background: transparent;
     font: inherit;
     text-align: left;
     padding: 0;
+    color: var(--text-primary);
+    cursor: pointer;
   }
 
-  .item-detail {
-    margin-top: 0.75rem;
-    padding-left: 2rem;
+  .row-title:hover {
+    color: var(--accent);
   }
+
+  /* ── Item detail (expanded) ── */
+
+  .item-detail {
+    margin-top: 0.6rem;
+    padding-left: 2rem;
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+  }
+
+  .item-detail h3 {
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.25rem;
+  }
+
+  .item-detail section {
+    margin-bottom: 0.6rem;
+  }
+
+  .item-detail ol {
+    margin: 0.25rem 0;
+    padding-left: 1.25rem;
+    color: var(--text-secondary);
+  }
+
+  .item-detail p {
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* ── Forms ── */
 
   .edit-form,
   .manual-form,
   .skip-form,
   .failure-composer {
     display: grid;
-    gap: 0.6rem;
+    gap: 0.5rem;
     max-width: 42rem;
   }
 
   .edit-form textarea,
   .failure-composer textarea {
     min-height: 4rem;
+    resize: vertical;
   }
 
   .failure-composer {
-    border: 1px solid #111;
-    margin-top: 0.75rem;
+    border: 1px solid var(--danger-border);
+    border-radius: 0.5rem;
+    background: var(--danger-bg);
+    margin-top: 0.6rem;
     padding: 0.75rem;
   }
 
   .failure-evidence-summary {
-    border-left: 3px solid #b00020;
+    border-left: 3px solid var(--danger);
     padding-left: 0.75rem;
+  }
+
+  .original-text {
+    opacity: 0.6;
+    border-left: 2px solid var(--border-default);
+    padding-left: 0.75rem;
+  }
+
+  .history-panel {
+    color: var(--text-secondary);
+  }
+
+  .history-panel ol {
+    margin: 0.25rem 0;
+    padding-left: 1.25rem;
+    font-size: 0.85rem;
+  }
+
+  .completion-feedback {
+    position: fixed;
+    right: 1.25rem;
+    bottom: 1.25rem;
+    z-index: 120;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    border: 1px solid var(--success-border);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-raised) 88%, var(--success));
+    box-shadow: 0 0 0 1px rgba(125, 211, 167, 0.08), 0 0 32px rgba(125, 211, 167, 0.16);
+    color: var(--text-primary);
+    padding: 0.45rem 0.7rem 0.45rem 0.5rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    animation: completion-settle 1.8s cubic-bezier(0.2, 0, 0, 1) both;
+  }
+
+  .completion-feedback__icon {
+    display: inline-grid;
+    width: 1.35rem;
+    height: 1.35rem;
+    place-items: center;
+    border-radius: 999px;
+    background: var(--success);
+    color: #ffffff;
+  }
+
+  .completion-feedback__icon svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 4;
+  }
+
+  @keyframes completion-settle {
+    0% {
+      opacity: 0;
+      transform: translateY(0.4rem) scale(0.98);
+    }
+    12% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    74% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(0) scale(0.99);
+    }
   }
 
   .paste-hint {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: 0.82rem;
+    color: var(--text-tertiary);
+  }
+
+  /* ── Restore panel ── */
+
+  .restore-panel ul {
+    list-style: none;
+    padding: 0;
+    margin: 0.5rem 0 0;
+  }
+
+  .restore-panel li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 760px) {
+    .checklist-tools {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .checklist-tools__add {
+      justify-self: start;
+    }
+
+    .checklist-row {
+      grid-template-columns: minmax(0, 1fr);
+      row-gap: 0.45rem;
+      padding: 0.5rem 0.6rem;
+    }
+
+    .checklist-row.is-selected,
+    .checklist-row.is-failed {
+      padding-left: calc(0.6rem - 3px);
+    }
+
+    .row-actions {
+      grid-column: 1;
+      justify-content: flex-end;
+    }
+
+    .completion-feedback {
+      right: 1rem;
+      bottom: 1rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .completion-feedback {
+      animation: completion-fade 1.8s linear both;
+    }
+
+    @keyframes completion-fade {
+      0%, 78% { opacity: 1; }
+      100% { opacity: 0; }
+    }
   }
 </style>

@@ -25,11 +25,10 @@ describe('App shell', () => {
   it('shows read-only health indicators without asking for secrets', () => {
     render(App);
 
-    expect(screen.getByRole('heading', { name: 'Prerequisites' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'MCP registration' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Inbox writability' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Tracker readiness' })).toBeInTheDocument();
-    expect(screen.getByText(/No app-managed secrets/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Setup health')).toBeInTheDocument();
+    expect(screen.getByText('MCP registration')).toBeInTheDocument();
+    expect(screen.getByText('Inbox writability')).toBeInTheDocument();
+    expect(screen.getByText('Tracker readiness')).toBeInTheDocument();
     expect(screen.queryByLabelText(/api key|token|password|secret/i)).not.toBeInTheDocument();
   });
 
@@ -62,6 +61,7 @@ describe('App shell', () => {
     expect(screen.getByRole('button', { name: /mark Verify login redirect passed/i })).toBeInTheDocument();
     expect(screen.getAllByText('child-1').length).toBeGreaterThan(0);
     expect(screen.getByText('Low confidence')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Shortcuts' }));
     expect(screen.getByRole('button', { name: /j\/k Navigate/i })).toBeInTheDocument();
 
     await fireEvent.keyDown(window, { key: 'Enter' });
@@ -84,9 +84,10 @@ describe('App shell', () => {
     render(App, { props: { initialState: createChecklistState() } });
 
     await fireEvent.keyDown(window, { key: ' ' });
-    expect(screen.getByText('passed')).toBeInTheDocument();
+    expect(screen.getByText('Completed (1)')).toBeInTheDocument();
 
-    await fireEvent.keyDown(window, { key: ' ' });
+    await fireEvent.click(screen.getByText('Completed (1)'));
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
     expect(screen.getAllByText('pending')).toHaveLength(2);
 
     await fireEvent.keyDown(window, { key: 'j' });
@@ -100,13 +101,14 @@ describe('App shell', () => {
     expect(screen.queryByText('Verify audit export')).not.toBeInTheDocument();
 
     await fireEvent.input(screen.getByLabelText('Search checklist'), { target: { value: '' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Verify login redirect' }));
     await fireEvent.click(screen.getByRole('button', { name: /skip Verify login redirect/i }));
     await fireEvent.input(screen.getByLabelText('Skip reason'), { target: { value: 'Covered by release smoke test' } });
     await fireEvent.click(screen.getByRole('button', { name: 'Save skip' }));
 
     expect(screen.getByText('skipped')).toBeInTheDocument();
     await fireEvent.click(screen.getByRole('button', { name: /history Verify login redirect/i }));
-    expect(screen.getByText(/Skipped: Covered by release smoke test/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Skipped: Covered by release smoke test/i).length).toBeGreaterThan(0);
   });
 
   it('opens a scoped failure composer with required actual behavior and screenshot attachments', async () => {
@@ -138,6 +140,30 @@ describe('App shell', () => {
     expect(screen.getByText(/Screenshots: callback.png/i)).toBeInTheDocument();
   });
 
+  it('shows persisted failure screenshot local references', async () => {
+    const state = createChecklistState();
+    const item = state.sessions[0].items?.[0];
+    if (!item) throw new Error('Expected checklist item fixture.');
+    item.status = 'failed';
+    item.note = 'The login flow stays on the callback screen.';
+    item.failureEvidence = {
+      actualBehavior: item.note,
+      screenshots: [
+        {
+          name: 'callback.png',
+          mimeType: 'image/png',
+          sizeBytes: 9,
+          localReference: 'screenshots/session-1/item-1/callback.png'
+        }
+      ]
+    };
+
+    render(App, { props: { initialState: state } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Verify login redirect' }));
+
+    expect(screen.getByText(/Screenshots: callback.png \(screenshots\/session-1\/item-1\/callback.png\)/i)).toBeInTheDocument();
+  });
+
   it('adds manual QA items and lets them use the same checklist flow', async () => {
     render(App, { props: { initialState: createChecklistState() } });
 
@@ -155,6 +181,8 @@ describe('App shell', () => {
     await fireEvent.click(screen.getByRole('button', { name: /mark Verify keyboard shortcut help passed/i }));
     expect(screen.getByRole('row', { name: /manual Verify keyboard shortcut help passed/i })).toBeInTheDocument();
 
+    await fireEvent.click(screen.getByText('Completed (1)'));
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify keyboard shortcut help passed/i }));
     await fireEvent.click(screen.getByRole('button', { name: /fail Verify keyboard shortcut help/i }));
     expect(screen.getByRole('heading', { name: /Failure evidence for Verify keyboard shortcut help/i })).toBeInTheDocument();
     expect(screen.getByLabelText('Actual behavior')).toBeRequired();
@@ -164,6 +192,8 @@ describe('App shell', () => {
     render(App, { props: { initialState: createChecklistState() } });
 
     await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
+    await fireEvent.click(screen.getByText('Completed (1)'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Verify login redirect' }));
     await fireEvent.click(screen.getByRole('button', { name: /delete item Verify login redirect/i }));
 
     expect(screen.queryByRole('row', { name: /child-1 Verify login redirect passed/i })).not.toBeInTheDocument();
@@ -171,10 +201,12 @@ describe('App shell', () => {
 
     await fireEvent.click(screen.getByRole('button', { name: /restore item Verify login redirect/i }));
     expect(screen.getByText('Verify login redirect')).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Verify login redirect' }));
     await fireEvent.click(screen.getByRole('button', { name: /history Verify login redirect/i }));
     expect(screen.getAllByText('Passed').length).toBeGreaterThan(0);
     expect(screen.getByText('Restored')).toBeInTheDocument();
 
+    await fireEvent.click(screen.getByText('Session actions'));
     await fireEvent.click(screen.getByRole('button', { name: /delete session sample-repo parent-1 QA/i }));
     expect(screen.queryByRole('heading', { level: 2, name: 'sample-repo parent-1 QA' })).not.toBeInTheDocument();
     expect(screen.getByText('Deleted sessions')).toBeInTheDocument();
@@ -186,12 +218,14 @@ describe('App shell', () => {
   it('archives only manually completed sessions and keeps archived evidence searchable', async () => {
     render(App, { props: { initialState: createChecklistState() } });
 
+    await fireEvent.click(screen.getByText('Session actions'));
     expect(screen.getByRole('button', { name: /Archive session sample-repo parent-1 QA/i })).toBeDisabled();
   });
 
   it('moves archive-ready sessions to searchable archived results without tracker mutation', async () => {
     render(App, { props: { initialState: createArchiveReadyState() } });
 
+    await fireEvent.click(screen.getByText('Session actions'));
     await fireEvent.click(screen.getByRole('button', { name: /Archive session sample-repo parent-1 QA/i }));
 
     expect(screen.queryByRole('heading', { level: 2, name: 'sample-repo parent-1 QA' })).not.toBeInTheDocument();
@@ -209,6 +243,7 @@ describe('App shell', () => {
 
     render(App, { props: { initialState: createChecklistState() } });
 
+    await fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByRole('heading', { name: 'Pass chime' })).toBeInTheDocument();
     expect(screen.getByLabelText('Pass chime volume')).toHaveValue('35');
 
@@ -222,13 +257,13 @@ describe('App shell', () => {
     await fireEvent.click(screen.getByLabelText('Mute pass chime'));
     expect(localStorage.getItem('qa-to-do.interaction-settings')).toContain('"passChimeMuted":true');
 
-    await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
-    await fireEvent.click(screen.getByRole('button', { name: /mark Verify login redirect passed/i }));
+    await fireEvent.click(screen.getByRole('button', { name: /mark Verify audit export passed/i }));
     expect(audio.oscillatorStart).toHaveBeenCalledTimes(1);
 
+    await fireEvent.click(screen.getByText('Completed (2)'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Verify login redirect' }));
     await fireEvent.click(screen.getByRole('button', { name: /history Verify login redirect/i }));
-    expect(screen.getAllByText('Passed').length).toBeGreaterThan(1);
-    expect(screen.getByText('Unpassed')).toBeInTheDocument();
+    expect(screen.getAllByText('Passed').length).toBeGreaterThan(0);
     expect(screen.queryByText(/Pass chime/i, { selector: 'li' })).not.toBeInTheDocument();
   });
 });
