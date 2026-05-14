@@ -98,10 +98,6 @@ describe('QA To Do MCP failed QA tools', () => {
 
   it('extracts failed Beads evidence with screenshots and a deterministic draft issue', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'qa-mcp-evidence-'));
-    const sourceDir = join(storageRoot, 'source');
-    mkdirSync(sourceDir);
-    const sourcePath = join(sourceDir, 'callback.png');
-    writeFileSync(sourcePath, 'png-bytes');
     const repository = new QaStorageRepository(':memory:', storageRoot);
     const payload = createBeadsQaSessionFromParent('parent-1', beadsIssues.slice(0, 2), repo, '2026-05-12T09:00:00.000Z');
     const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
@@ -109,11 +105,11 @@ describe('QA To Do MCP failed QA tools', () => {
 
     repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
     saveActualBehavior(repository, sessionId, item, 'The login flow stays on the callback screen.');
-    repository.attachFailureScreenshot(sessionId, item.id, {
-      sourcePath,
+    const screenshotSize = attachFailureScreenshot(repository, storageRoot, sessionId, item.id, {
       originalName: 'callback.png',
+      contents: 'png-bytes',
       mimeType: 'image/png'
-    }, '2026-05-12T09:02:00.000Z');
+    });
 
     const result = handleQaToDoMcpToolCall(repository, 'qa_failed_item_get', { sessionId, itemId: item.id });
     repository.close();
@@ -143,7 +139,7 @@ describe('QA To Do MCP failed QA tools', () => {
           expect.objectContaining({
             name: 'callback.png',
             mimeType: 'image/png',
-            sizeBytes: 9,
+            sizeBytes: screenshotSize,
             localReference: expect.stringContaining('app-storage://')
           })
         ]
@@ -181,14 +177,20 @@ describe('QA To Do MCP failed QA tools', () => {
     repository.close();
   });
 
-  it('extracts .scratch failures through the same failure context with a structured markdown draft', () => {
-    const repository = new QaStorageRepository();
+  it('extracts .scratch failures through the same failure context with a structured markdown draft', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'qa-mcp-scratch-evidence-'));
+    const repository = new QaStorageRepository(':memory:', storageRoot);
     const payload = createScratchQaSessionFromParent('scratch-parent', scratchIssues, repo, '2026-05-12T09:00:00.000Z');
     const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
     const item = payload.items[0];
 
     repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
     saveActualBehavior(repository, sessionId, item, 'The scratch workflow shows stale content.');
+    const screenshotSize = attachFailureScreenshot(repository, storageRoot, sessionId, item.id, {
+      originalName: 'scratch-failure.png',
+      contents: 'scratch-png-bytes',
+      mimeType: 'image/png'
+    });
 
     const result = handleQaToDoMcpToolCall(repository, 'qa_failed_item_get', { sessionId, itemId: item.id });
     repository.close();
@@ -199,8 +201,17 @@ describe('QA To Do MCP failed QA tools', () => {
       labels: ['needs-triage', 'bug'],
       discoveredFromIssueId: 'scratch-child'
     });
+    expect(result.screenshots[0]).toMatchObject({
+      originalName: 'scratch-failure.png',
+      localPath: expect.stringContaining(join('screenshots', sessionId, item.id)),
+      localReference: expect.stringContaining('app-storage://screenshots/')
+    });
     expect(result.draftIssue?.copyableIssueText).toContain('type: bug');
     expect(result.draftIssue?.copyableIssueText).toContain('qaFailureFingerprint: qa-failure:/repos/sample-repo:scratch-parent:');
+    expect(result.draftIssue?.copyableIssueText).toContain(
+      `scratch-failure.png (image/png, ${screenshotSize} bytes): app-storage://screenshots/`
+    );
+    expect(JSON.stringify(result)).not.toContain('scratch-png-bytes');
   });
 
   it('marks only failed items as filed and records the tracker issue id in history', () => {
@@ -281,6 +292,25 @@ function saveActualBehavior(
     expectedResult: item.expectedResult,
     note: actualBehavior
   }, '2026-05-12T09:01:30.000Z');
+}
+
+function attachFailureScreenshot(
+  repository: QaStorageRepository,
+  storageRoot: string,
+  sessionId: string,
+  itemId: string,
+  screenshot: { readonly originalName: string; readonly contents: string; readonly mimeType: string }
+): number {
+  const sourceDir = join(storageRoot, 'source');
+  mkdirSync(sourceDir, { recursive: true });
+  const sourcePath = join(sourceDir, screenshot.originalName);
+  writeFileSync(sourcePath, screenshot.contents);
+  repository.attachFailureScreenshot(sessionId, itemId, {
+    sourcePath,
+    originalName: screenshot.originalName,
+    mimeType: screenshot.mimeType
+  }, '2026-05-12T09:02:00.000Z');
+  return Buffer.byteLength(screenshot.contents);
 }
 
 async function createTemporaryMcpConfig(): Promise<QaToDoMcpConfig> {
