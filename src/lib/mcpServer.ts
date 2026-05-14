@@ -2,7 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { resolveQaToDoMcpConfig } from './mcpConfig';
-import { createQaSessionFromPayload, runToQaParent } from './mcpToolHandlers';
+import { createQaSessionFromPayload, handleQaToDoMcpToolCall, qaToDoMcpToolDefinitions, runToQaParent } from './mcpToolHandlers';
+import { QaStorageRepository } from './qaStorage';
 
 const payloadInputSchema = {
   payload: z.unknown().describe('Validated by QA To Do as a qa-session.v1 payload.'),
@@ -17,6 +18,14 @@ const runToQaInputSchema = {
   tracker: z.enum(['auto', 'beads', 'scratch']).optional(),
   correlationId: z.string().optional(),
   generatedAt: z.string().optional()
+};
+
+const failedItemsListToolDefinition = requiredToolDefinition('qa_failed_items_list');
+
+const failedItemsListInputSchema = {
+  includeFiled: z.boolean().optional().describe(
+    failedItemsListToolDefinition.inputSchema.properties.includeFiled.description
+  )
 };
 
 export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): McpServer {
@@ -42,6 +51,25 @@ export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): Mcp
     async (input) => toTextResult(await runToQaParent(input, resolveQaToDoMcpConfig(env)))
   );
 
+  server.registerTool(
+    'qa_failed_items_list',
+    {
+      title: 'List Failed QA Items',
+      description: failedItemsListToolDefinition.description,
+      inputSchema: failedItemsListInputSchema
+    },
+    async (input) => {
+      const config = resolveQaToDoMcpConfig(env);
+      const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+
+      try {
+        return toTextResult(handleQaToDoMcpToolCall(repository, 'qa_failed_items_list', input));
+      } finally {
+        repository.close();
+      }
+    }
+  );
+
   return server;
 }
 
@@ -59,4 +87,12 @@ function toTextResult(value: unknown) {
       }
     ]
   };
+}
+
+function requiredToolDefinition(name: 'qa_failed_items_list') {
+  const toolDefinition = qaToDoMcpToolDefinitions.find((tool) => tool.name === name);
+  if (!toolDefinition) {
+    throw new Error(`${name} MCP tool definition is missing.`);
+  }
+  return toolDefinition;
 }
