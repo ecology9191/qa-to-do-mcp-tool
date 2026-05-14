@@ -91,6 +91,8 @@ export interface ActiveQaItem {
   readonly history: readonly QaItemHistoryEvent[];
 }
 
+export type FailedQaItemStatus = Extract<QaItemStatus, 'failed' | 'failed-filed'>;
+
 export interface FailedQaItemRecord {
   readonly session: {
     readonly id: string;
@@ -102,7 +104,7 @@ export interface FailedQaItemRecord {
     readonly parentIssueTitle: string;
     readonly archivedAt?: string;
   };
-  readonly item: ActiveQaItem & { readonly status: 'failed' | 'failed-filed' };
+  readonly item: ActiveQaItem & { readonly status: FailedQaItemStatus };
 }
 
 export type QaItemStatus = 'pending' | 'passed' | 'failed' | 'failed-filed' | 'skipped';
@@ -162,6 +164,7 @@ interface ScreenshotStorageLocation {
 
 const manualItemSourceIssueId = 'manual';
 const manualItemHistoryDetail = 'Manual QA item added';
+const failedQaItemStatuses = ['failed', 'failed-filed'] as const satisfies readonly FailedQaItemStatus[];
 
 export class QaStorageRepository {
   readonly #database: DatabaseSync;
@@ -534,7 +537,7 @@ export class QaStorageRepository {
   }
 
   listFailedQaItems(options: { readonly includeFiled?: boolean } = {}): FailedQaItemRecord[] {
-    const statuses = options.includeFiled ? ['failed', 'failed-filed'] : ['failed'];
+    const statuses: readonly FailedQaItemStatus[] = options.includeFiled ? failedQaItemStatuses : ['failed'];
     const placeholders = statuses.map(() => '?').join(', ');
     const rows = this.#database
       .prepare(
@@ -595,11 +598,6 @@ export class QaStorageRepository {
     if (!row) {
       throw new Error(`QA item ${normalizedItemId} was not found in session ${normalizedSessionId}.`);
     }
-    const status = toQaItemStatus(row.status);
-    if (status !== 'failed' && status !== 'failed-filed') {
-      throw new Error('Only failed or failed-filed QA items can be extracted.');
-    }
-
     return this.#toFailedQaItemRecord(row);
   }
 
@@ -954,7 +952,7 @@ export class QaStorageRepository {
 
   #toFailedQaItemRecord(row: FailedItemJoinRow): FailedQaItemRecord {
     const item = toActiveItem(row, this.#getItemHistory(row.session_id, row.id), this.#getItemScreenshots(row.session_id, row.id));
-    if (item.status !== 'failed' && item.status !== 'failed-filed') {
+    if (!isFailedQaItem(item)) {
       throw new Error('Only failed or failed-filed QA items can be extracted.');
     }
 
@@ -969,7 +967,7 @@ export class QaStorageRepository {
         parentIssueTitle: row.parent_issue_title,
         ...(row.archived_at ? { archivedAt: row.archived_at } : {})
       },
-      item: item as FailedQaItemRecord['item']
+      item
     };
   }
 
@@ -1032,6 +1030,10 @@ function toQaItemStatus(value: string): QaItemStatus {
     return value;
   }
   return 'pending';
+}
+
+function isFailedQaItem(item: ActiveQaItem): item is ActiveQaItem & { readonly status: FailedQaItemStatus } {
+  return item.status === 'failed' || item.status === 'failed-filed';
 }
 
 function toHistoryAction(value: string): QaItemHistoryAction {
