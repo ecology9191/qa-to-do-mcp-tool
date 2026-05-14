@@ -2,7 +2,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { resolveQaToDoMcpConfig } from './mcpConfig';
-import { createQaSessionFromPayload, handleQaToDoMcpToolCall, qaToDoMcpToolDefinitions, runToQaParent } from './mcpToolHandlers';
+import {
+  createQaSessionFromPayload,
+  handleQaToDoMcpToolCall,
+  qaToDoMcpToolDefinitions,
+  runToQaParent
+} from './mcpToolHandlers';
 import { QaStorageRepository } from './qaStorage';
 
 const payloadInputSchema = {
@@ -20,7 +25,8 @@ const runToQaInputSchema = {
   generatedAt: z.string().optional()
 };
 
-const failedItemsListToolDefinition = requiredToolDefinition('qa_failed_items_list');
+const failedItemsListToolName = 'qa_failed_items_list';
+const failedItemsListToolDefinition = requiredToolDefinition(failedItemsListToolName);
 
 const failedItemsListInputSchema = {
   includeFiled: z.boolean().optional().describe(
@@ -52,7 +58,7 @@ export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): Mcp
   );
 
   server.registerTool(
-    'qa_failed_items_list',
+    failedItemsListToolName,
     {
       title: 'List Failed QA Items',
       description: failedItemsListToolDefinition.description,
@@ -63,7 +69,7 @@ export function createQaToDoMcpServer(env: NodeJS.ProcessEnv = process.env): Mcp
       const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
 
       try {
-        return toTextResult(handleQaToDoMcpToolCall(repository, 'qa_failed_items_list', input));
+        return toTextResult(handleQaToDoMcpToolCall(repository, failedItemsListToolName, input));
       } finally {
         repository.close();
       }
@@ -89,7 +95,7 @@ function toTextResult(value: unknown) {
   };
 }
 
-function requiredToolDefinition(name: 'qa_failed_items_list') {
+function requiredToolDefinition(name: typeof failedItemsListToolName) {
   const toolDefinition = qaToDoMcpToolDefinitions.find((tool) => tool.name === name);
   if (!toolDefinition) {
     throw new Error(`${name} MCP tool definition is missing.`);

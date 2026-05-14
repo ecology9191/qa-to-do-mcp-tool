@@ -1,8 +1,8 @@
 // @vitest-environment node
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBeadsQaSessionFromParent, type BeadsIssue } from './beadsQa';
 import type { QaToDoMcpConfig } from './mcpConfig';
 import { createQaToDoMcpServer } from './mcpServer';
@@ -31,31 +31,32 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
 }));
 
 describe('QA To Do MCP server', () => {
-  it('registers qa_failed_items_list against local QA To Do storage', async () => {
+  const temporaryDirectories: string[] = [];
+
+  afterEach(async () => {
     registeredTools.length = 0;
-    const config = await createTemporaryMcpConfig();
+    await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  });
+
+  it('registers qa_failed_items_list against local QA To Do storage', async () => {
+    const config = await createTemporaryMcpConfig(temporaryDirectories);
     const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
     const payload = createBeadsQaSessionFromParent('parent-1', issues, repo, '2026-05-12T09:00:00.000Z');
     const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
     const [failedItem, filedItem] = payload.items;
 
     repository.failItem(sessionId, failedItem.id, '2026-05-12T09:01:00.000Z');
-    repository.editItem(sessionId, failedItem.id, {
-      title: failedItem.title,
-      steps: failedItem.steps,
-      expectedResult: failedItem.expectedResult,
-      note: 'The import panel stays empty.'
-    }, '2026-05-12T09:01:30.000Z');
+    saveActualBehavior(repository, sessionId, failedItem, 'The import panel stays empty.');
     repository.failItem(sessionId, filedItem.id, '2026-05-12T09:02:00.000Z');
     repository.markFailureFiled(sessionId, filedItem.id, 'bug-1', '2026-05-12T09:03:00.000Z');
     repository.close();
 
     createQaToDoMcpServer(configEnv(config));
-    const tool = registeredTools.find((candidate) => candidate.name === 'qa_failed_items_list');
+    const tool = registeredTool('qa_failed_items_list');
 
-    expect(tool?.config.description).toContain('failed means user-provided failure evidence exists');
-    expect(tool?.config.description).toContain('failed-filed means a tracker issue has already been recorded');
-    const response = JSON.parse((await tool!.handler({})).content[0].text);
+    expect(tool.config.description).toContain('failed means user-provided failure evidence exists');
+    expect(tool.config.description).toContain('failed-filed means a tracker issue has already been recorded');
+    const response = JSON.parse((await tool.handler({})).content[0].text);
 
     expect(response).toMatchObject({
       schemaVersion: 1,
@@ -82,8 +83,9 @@ describe('QA To Do MCP server', () => {
   });
 });
 
-async function createTemporaryMcpConfig(): Promise<QaToDoMcpConfig> {
+async function createTemporaryMcpConfig(temporaryDirectories: string[]): Promise<QaToDoMcpConfig> {
   const root = await mkdtemp(join(tmpdir(), 'qa-to-do-mcp-server-'));
+  temporaryDirectories.push(root);
   return {
     inboxDir: join(root, 'inbox'),
     processedDir: join(root, 'processed'),
@@ -91,6 +93,28 @@ async function createTemporaryMcpConfig(): Promise<QaToDoMcpConfig> {
     databasePath: join(root, 'qa-to-do.sqlite'),
     storageRoot: join(root, 'evidence')
   };
+}
+
+function registeredTool(name: string): RegisteredTool {
+  const tool = registeredTools.find((candidate) => candidate.name === name);
+  if (!tool) {
+    throw new Error(`Expected ${name} to be registered.`);
+  }
+  return tool;
+}
+
+function saveActualBehavior(
+  repository: QaStorageRepository,
+  sessionId: string,
+  item: { readonly id: string; readonly title: string; readonly steps: readonly string[]; readonly expectedResult: string },
+  actualBehavior: string
+): void {
+  repository.editItem(sessionId, item.id, {
+    title: item.title,
+    steps: item.steps,
+    expectedResult: item.expectedResult,
+    note: actualBehavior
+  }, '2026-05-12T09:01:30.000Z');
 }
 
 function configEnv(config: QaToDoMcpConfig): NodeJS.ProcessEnv {
