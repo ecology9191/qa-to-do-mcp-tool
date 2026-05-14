@@ -8,6 +8,7 @@ import { createBeadsQaSessionFromParent, type BeadsIssue } from './beadsQa';
 import type { QaToDoMcpConfig } from './mcpConfig';
 import { createQaToDoMcpServer } from './mcpServer';
 import { QaStorageRepository } from './qaStorage';
+import { createScratchQaSessionFromParent, type ScratchIssue } from './scratchQa';
 
 interface RegisteredTool {
   readonly name: string;
@@ -157,6 +158,80 @@ describe('QA To Do MCP server', () => {
     expect(response.draftIssue.copyableIssueText).toContain('app-storage://screenshots/');
     expect(JSON.stringify(response)).not.toContain('png-bytes');
   });
+
+  it('registers qa_failed_item_get with structured .scratch draft markdown and screenshot references', async () => {
+    const config = await createTemporaryMcpConfig(temporaryDirectories);
+    const sourceDir = join(config.storageRoot, 'source');
+    mkdirSync(sourceDir, { recursive: true });
+    const sourcePath = join(sourceDir, 'scratch-failure.png');
+    writeFileSync(sourcePath, 'scratch-png-bytes');
+    const repository = new QaStorageRepository(config.databasePath, config.storageRoot);
+    const payload = createScratchQaSessionFromParent('scratch-parent', scratchIssues, repo, '2026-05-12T09:00:00.000Z');
+    const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
+    const item = payload.items[0];
+
+    repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
+    saveActualBehavior(repository, sessionId, item, 'The scratch workflow shows stale content after refresh.');
+    repository.attachFailureScreenshot(sessionId, item.id, {
+      sourcePath,
+      originalName: 'scratch-failure.png',
+      mimeType: 'image/png'
+    }, '2026-05-12T09:02:00.000Z');
+    repository.close();
+
+    createQaToDoMcpServer(configEnv(config));
+    const tool = registeredTool('qa_failed_item_get');
+    const response = JSON.parse((await tool.handler({ sessionId, itemId: item.id })).content[0].text);
+
+    expect(response).toMatchObject({
+      schemaVersion: 1,
+      kind: 'qa-failed-item.detail',
+      sessionId,
+      itemId: item.id,
+      status: 'failed',
+      tracker: 'scratch',
+      actualBehavior: 'The scratch workflow shows stale content after refresh.',
+      failureContext: {
+        repo: { name: 'sample-repo', path: '/repos/sample-repo' },
+        parentIssue: { id: 'scratch-parent', title: 'Scratch parent feature' },
+        item: {
+          id: item.id,
+          title: item.title,
+          steps: item.steps,
+          expectedResult: item.expectedResult,
+          fingerprint: item.fingerprint,
+          sourceIssueId: 'scratch-child',
+          sourceEvidence: item.sourceEvidence
+        },
+        actualBehavior: 'The scratch workflow shows stale content after refresh.',
+        screenshots: [
+          expect.objectContaining({
+            name: 'scratch-failure.png',
+            mimeType: 'image/png',
+            sizeBytes: 17,
+            localReference: expect.stringContaining('app-storage://screenshots/')
+          })
+        ]
+      },
+      screenshots: [
+        expect.objectContaining({
+          originalName: 'scratch-failure.png',
+          localReference: expect.stringContaining('app-storage://screenshots/'),
+          localPath: expect.stringContaining(join('screenshots', sessionId, item.id))
+        })
+      ],
+      draftIssue: expect.objectContaining({
+        kind: 'scratch-failure-issue-draft',
+        labels: ['needs-triage', 'bug'],
+        discoveredFromIssueId: 'scratch-child',
+        dedupeFingerprint: `qa-failure:/repos/sample-repo:scratch-parent:${item.fingerprint}`
+      })
+    });
+    expect(response.draftIssue.copyableIssueText).toContain('type: bug');
+    expect(response.draftIssue.copyableIssueText).toContain('qaFailureFingerprint: qa-failure:/repos/sample-repo:scratch-parent:');
+    expect(response.draftIssue.copyableIssueText).toContain('scratch-failure.png (image/png, 17 bytes): app-storage://screenshots/');
+    expect(JSON.stringify(response)).not.toContain('scratch-png-bytes');
+  });
 });
 
 async function createTemporaryMcpConfig(temporaryDirectories: string[]): Promise<QaToDoMcpConfig> {
@@ -225,5 +300,22 @@ const issues: BeadsIssue[] = [
     title: 'Export QA sessions',
     status: 'closed',
     dependencies: [{ issue_id: 'child-filed', depends_on_id: 'parent-1', type: 'parent-child' }]
+  }
+];
+
+const scratchIssues: ScratchIssue[] = [
+  {
+    id: 'scratch-parent',
+    title: 'Scratch parent feature',
+    status: 'open',
+    acceptanceNotes: ['Parent scope.']
+  },
+  {
+    id: 'scratch-child',
+    title: 'Render scratch workflow',
+    status: 'closed',
+    parent: 'scratch-parent',
+    acceptanceNotes: ['The scratch workflow renders current content.'],
+    filePath: '/repos/sample-repo/.scratch/scratch-child.md'
   }
 ];

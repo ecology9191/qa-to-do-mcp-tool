@@ -181,14 +181,24 @@ describe('QA To Do MCP failed QA tools', () => {
     repository.close();
   });
 
-  it('extracts .scratch failures through the same failure context with a structured markdown draft', () => {
-    const repository = new QaStorageRepository();
+  it('extracts .scratch failures through the same failure context with a structured markdown draft', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'qa-mcp-scratch-evidence-'));
+    const sourceDir = join(storageRoot, 'source');
+    mkdirSync(sourceDir);
+    const sourcePath = join(sourceDir, 'scratch-failure.png');
+    writeFileSync(sourcePath, 'scratch-png-bytes');
+    const repository = new QaStorageRepository(':memory:', storageRoot);
     const payload = createScratchQaSessionFromParent('scratch-parent', scratchIssues, repo, '2026-05-12T09:00:00.000Z');
     const sessionId = repository.importSession(payload, '2026-05-12T09:00:01.000Z');
     const item = payload.items[0];
 
     repository.failItem(sessionId, item.id, '2026-05-12T09:01:00.000Z');
     saveActualBehavior(repository, sessionId, item, 'The scratch workflow shows stale content.');
+    repository.attachFailureScreenshot(sessionId, item.id, {
+      sourcePath,
+      originalName: 'scratch-failure.png',
+      mimeType: 'image/png'
+    }, '2026-05-12T09:02:00.000Z');
 
     const result = handleQaToDoMcpToolCall(repository, 'qa_failed_item_get', { sessionId, itemId: item.id });
     repository.close();
@@ -199,8 +209,15 @@ describe('QA To Do MCP failed QA tools', () => {
       labels: ['needs-triage', 'bug'],
       discoveredFromIssueId: 'scratch-child'
     });
+    expect(result.screenshots[0]).toMatchObject({
+      originalName: 'scratch-failure.png',
+      localPath: expect.stringContaining(join('screenshots', sessionId, item.id)),
+      localReference: expect.stringContaining('app-storage://screenshots/')
+    });
     expect(result.draftIssue?.copyableIssueText).toContain('type: bug');
     expect(result.draftIssue?.copyableIssueText).toContain('qaFailureFingerprint: qa-failure:/repos/sample-repo:scratch-parent:');
+    expect(result.draftIssue?.copyableIssueText).toContain('scratch-failure.png (image/png, 17 bytes): app-storage://screenshots/');
+    expect(JSON.stringify(result)).not.toContain('scratch-png-bytes');
   });
 
   it('marks only failed items as filed and records the tracker issue id in history', () => {
